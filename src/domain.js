@@ -487,8 +487,8 @@ function makeAthlete(partial) {
 export function createWorkspace() {
   const ola = makeAthlete({
     id: 'ola',
-    name: 'Ola Nilsen',
-    code: 'ATH-OLA',
+    name: 'David Thomas',
+    code: 'ATH-' + uid(),
     event: 'IPF Jr. Worlds',
     meetDate: '2027-01-07',
     coachId: COACH.id,
@@ -499,7 +499,7 @@ export function createWorkspace() {
   const marcus = makeAthlete({
     id: 'marcus',
     name: 'Marcus Chen',
-    code: 'ATH-MRC',
+    code: 'ATH-' + uid(),
     event: 'USAPL Nationals',
     meetDate: '2026-12-17',
     coachId: COACH.id,
@@ -510,7 +510,7 @@ export function createWorkspace() {
   const sofia = makeAthlete({
     id: 'sofia',
     name: 'Sofia Reyes',
-    code: 'ATH-SOF',
+    code: 'ATH-' + uid(),
     event: 'Off-season',
     meetDate: '2027-02-11',
     planningMode: 'block',
