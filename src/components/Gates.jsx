@@ -34,13 +34,13 @@ export function RoleGate({ onChoose }) {
   )
 }
 
-export function ConnectGate({ role, athletes, initialAthleteId, onConnect, onOpen, onCode, onBack, onCopy }) {
-  const [selfId, setSelfId] = useState(initialAthleteId || 'ola')
-  const [code, setCode] = useState('')
+export function ConnectGate({ role, athletes, coach = COACH, initialAthleteId, onConnect, onOpen, onCode, onBack, onCopy }) {
   const list = Object.values(athletes)
-  const self = athletes[selfId]
-  const connected = list.filter((a) => a.coachId === COACH.id)
-  const openRoster = list.filter((a) => a.coachId !== COACH.id)
+  const [selfId, setSelfId] = useState(initialAthleteId || list[0]?.id || '')
+  const [code, setCode] = useState('')
+  const self = athletes[selfId] || list[0]
+  const connected = list.filter((a) => a.coachId === coach.id)
+  const openRoster = list.filter((a) => a.coachId !== coach.id)
 
   return (
     <div className="min-h-svh bg-[#07080b] px-4 py-6 text-zinc-200">
@@ -59,15 +59,15 @@ export function ConnectGate({ role, athletes, initialAthleteId, onConnect, onOpe
         {role === 'coach' ? (
           <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
             <Card className="p-4">
-              <Avatar id={COACH.id} name={COACH.name} className="h-14 w-14 text-lg" />
-              <div className="mt-3 font-display text-3xl text-white">{COACH.name}</div>
+              <Avatar id={coach.id} name={coach.name} className="h-14 w-14 text-lg" />
+              <div className="mt-3 font-display text-3xl text-white">{coach.name}</div>
               <p className="text-sm text-zinc-500">Athletes connect with your code, then you open their programme.</p>
               <div className="mt-4 flex items-center justify-between rounded-lg border border-white/10 bg-black/30 px-3 py-2">
                 <div>
                   <div className="text-[10px] uppercase tracking-widest text-zinc-500">Your code</div>
-                  <div className="font-mono text-lg tracking-widest text-cyan-200">{COACH.code}</div>
+                  <div className="font-mono text-lg tracking-widest text-cyan-200">{coach.code}</div>
                 </div>
-                <button type="button" onClick={() => onCopy(COACH.code)} className="rounded-md border border-white/10 p-2 text-zinc-400" aria-label="Copy code"><Copy size={14} /></button>
+                <button type="button" onClick={() => onCopy(coach.code)} className="rounded-md border border-white/10 p-2 text-zinc-400" aria-label="Copy code"><Copy size={14} /></button>
               </div>
             </Card>
             <div className="grid gap-4">
@@ -109,15 +109,15 @@ export function ConnectGate({ role, athletes, initialAthleteId, onConnect, onOpe
                 <div className="flex items-center gap-2 text-lime-300"><Dumbbell size={16} /> {self.name}</div>
                 {self.coachId ? (
                   <>
-                    <p className="mt-3 text-sm text-zinc-400">Connected to {COACH.name}. Their code is <span className="font-mono text-zinc-200">{COACH.code}</span>.</p>
+                    <p className="mt-3 text-sm text-zinc-400">Connected to {coach.name}. Their code is <span className="font-mono text-zinc-200">{coach.code}</span>.</p>
                     <button type="button" onClick={() => onOpen(self.id)} className="mt-4 w-full rounded-lg bg-lime-400 py-2 text-sm font-semibold text-black">Open programme</button>
                   </>
                 ) : (
                   <>
                     <p className="mt-3 text-sm text-zinc-400">No coach yet. Connect with their code to open the programme.</p>
-                    <button type="button" onClick={() => onConnect(self.id, true)} className="mt-3 w-full rounded-lg border border-white/10 py-2 text-sm">Connect to {COACH.name}</button>
+                    <button type="button" onClick={() => onConnect(self.id, true)} className="mt-3 w-full rounded-lg border border-white/10 py-2 text-sm">Connect to {coach.name}</button>
                     <form className="mt-3 grid gap-2" onSubmit={(e) => { e.preventDefault(); onCode(code, self.id) }}>
-                      <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder={COACH.code} className="rounded-lg border border-white/10 bg-[#151821] px-3 py-2 font-mono tracking-widest" />
+                      <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder={coach.code} className="rounded-lg border border-white/10 bg-[#151821] px-3 py-2 font-mono tracking-widest" />
                       <button type="submit" className="rounded-lg bg-lime-400 py-2 text-sm font-semibold text-black">Connect with code</button>
                     </form>
                   </>

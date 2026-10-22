@@ -8,7 +8,7 @@ import { MessagesPage } from './components/MessagesPage'
 import { ProgressPage } from './components/ProgressPage'
 import { VideosPage } from './components/VideosPage'
 import {
-  COACH,
+  COACH as FALLBACK_COACH,
   WEEKDAYS,
   createWorkspace,
   e1FromSet,
@@ -25,21 +25,73 @@ import {
   uid,
   unreadCount,
 } from './domain'
+import {
+  fetchAthletes,
+  fetchCoaches,
+  mergeAthleteProfile,
+  updateAthleteCoachId,
+} from './supabaseClient'
 
-const initial = createWorkspace()
+const mockWorkspace = createWorkspace()
 
 export default function App() {
+  const [boot, setBoot] = useState({ status: 'loading', error: null })
+  const [coach, setCoach] = useState(FALLBACK_COACH)
   const [screen, setScreen] = useState('role')
   const [role, setRole] = useState(null)
   const [athleteId, setAthleteId] = useState(null)
-  const [athletes, setAthletes] = useState(initial.athletes)
-  const [messages, setMessages] = useState(initial.messages)
+  const [athletes, setAthletes] = useState({})
+  const [messages, setMessages] = useState(mockWorkspace.messages)
   const [page, setPage] = useState('programme')
   const [selectedBlockId, setSelectedBlockId] = useState(null)
   const [selectedWeek, setSelectedWeek] = useState(0)
   const [selectedDay, setSelectedDay] = useState(0)
   const [stage, setStage] = useState('macro')
   const [toast, setToast] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadProfiles() {
+      setBoot({ status: 'loading', error: null })
+      try {
+        const [coachRows, athleteProfiles] = await Promise.all([
+          fetchCoaches(),
+          fetchAthletes(),
+        ])
+        if (cancelled) return
+        if (!coachRows.length) {
+          throw new Error('No coaches found in Supabase. Run the seed script after schema setup.')
+        }
+        if (!athleteProfiles.length) {
+          throw new Error('No athletes found in Supabase. Run npm run seed:supabase.')
+        }
+        const nextCoach = coachRows.find((c) => c.id === FALLBACK_COACH.id) || coachRows[0]
+        const nextAthletes = {}
+        for (const profile of athleteProfiles) {
+          nextAthletes[profile.id] = mergeAthleteProfile(profile, mockWorkspace.athletes[profile.id])
+        }
+        setCoach(nextCoach)
+        setAthletes(nextAthletes)
+        setMessages((prev) => {
+          const next = { ...prev }
+          for (const id of Object.keys(nextAthletes)) {
+            if (!next[id]) next[id] = []
+          }
+          return next
+        })
+        setBoot({ status: 'ready', error: null })
+      } catch (err) {
+        if (cancelled) return
+        console.error('[supabase] profile load failed', err)
+        setBoot({
+          status: 'error',
+          error: err?.message || 'Could not load coaches and athletes from Supabase.',
+        })
+      }
+    }
+    loadProfiles()
+    return () => { cancelled = true }
+  }, [])
 
   const athlete = athleteId ? athletes[athleteId] : null
   const weeks = athlete ? runwayWeeks(athlete) : 0
@@ -59,7 +111,7 @@ export default function App() {
     return () => clearTimeout(id)
   }, [toast])
 
-  const connected = Object.values(athletes).filter((a) => a.coachId === COACH.id)
+  const connected = Object.values(athletes).filter((a) => a.coachId === coach.id)
   const messageBadge = role === 'coach'
     ? connected.reduce((sum, person) => sum + unreadCount(messages, person.id, 'coach'), 0)
     : (athlete ? unreadCount(messages, athlete.id, 'athlete') : 0)
@@ -132,18 +184,24 @@ export default function App() {
     }
   }
 
-  function connectAthlete(id, enter = false) {
+  async function connectAthlete(id, enter = false) {
     const person = athletes[id]
     if (!person) return
-    if (person.coachId === COACH.id) {
+    if (person.coachId === coach.id) {
       setToast(`${person.name} is already connected`)
       if (enter) openPerson(person, 'athlete')
       return
     }
-    const next = { ...person, coachId: COACH.id }
-    setAthletes((prev) => ({ ...prev, [id]: { ...prev[id], coachId: COACH.id } }))
-    setToast(`${person.name} connected to ${COACH.name}`)
-    if (enter) openPerson(next, 'athlete')
+    try {
+      await updateAthleteCoachId(id, coach.id)
+      const next = { ...person, coachId: coach.id }
+      setAthletes((prev) => ({ ...prev, [id]: { ...prev[id], coachId: coach.id } }))
+      setToast(`${person.name} connected to ${coach.name}`)
+      if (enter) openPerson(next, 'athlete')
+    } catch (err) {
+      console.error('[supabase] connect failed', err)
+      setToast(err?.message || 'Could not save connection to Supabase')
+    }
   }
 
   function submitCode(raw, athleteTarget) {
@@ -153,7 +211,7 @@ export default function App() {
       return
     }
     if (role === 'coach') {
-      if (code === COACH.code) {
+      if (code === coach.code) {
         setToast('Ask the athlete for their code')
         return
       }
@@ -166,12 +224,12 @@ export default function App() {
       return
     }
     if (!athleteTarget) return
-    if (code === COACH.code) {
+    if (code === coach.code) {
       connectAthlete(athleteTarget, true)
       return
     }
     if (Object.values(athletes).some((a) => a.code === code)) {
-      setToast(`Use your coach’s code, ${COACH.code}`)
+      setToast(`Use your coach’s code, ${coach.code}`)
       return
     }
     setToast('No coach with that code')
@@ -331,6 +389,38 @@ export default function App() {
       ['videos', 'Videos', Video],
     ]
 
+  if (boot.status === 'loading') {
+    return (
+      <div className="flex min-h-svh items-center justify-center bg-[#07080b] font-sans text-zinc-400">
+        <div className="text-center">
+          <div className="font-display text-3xl tracking-[0.14em] text-white">IRON//WORKBENCH</div>
+          <p className="mt-3 text-sm">Loading coaches and athletes from Supabase…</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (boot.status === 'error') {
+    return (
+      <div className="flex min-h-svh items-center justify-center bg-[#07080b] px-4 font-sans text-zinc-300">
+        <div className="max-w-md rounded-xl border border-orange-400/30 bg-[#140f0c] p-5">
+          <div className="font-display text-2xl text-white">Supabase connection failed</div>
+          <p className="mt-2 text-sm text-zinc-400">{boot.error}</p>
+          <p className="mt-3 text-xs text-zinc-500">
+            Check that `.env` has `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`, then restart the Vite dev server.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-4 rounded-lg bg-cyan-400 px-4 py-2 text-sm font-semibold text-black"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   if (screen === 'role' || !role) {
     return <RoleGate onChoose={(next) => { setRole(next); setScreen('connect') }} />
   }
@@ -340,6 +430,7 @@ export default function App() {
       <>
         <ConnectGate
           role={role}
+          coach={coach}
           athletes={athletes}
           initialAthleteId={role === 'athlete' ? athleteId : null}
           onConnect={connectAthlete}
@@ -363,7 +454,7 @@ export default function App() {
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-400 text-black"><Zap size={18} /></div>
             <div>
               <div className="font-display text-xl tracking-[0.14em] text-white">IRON//WORKBENCH</div>
-              <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">{role === 'coach' ? `Coach · ${COACH.name}` : `Athlete · ${athlete.name}`}</div>
+              <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">{role === 'coach' ? `Coach · ${coach.name}` : `Athlete · ${athlete.name}`}</div>
             </div>
           </button>
           {role === 'coach' ? (
@@ -377,7 +468,7 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <div className="text-sm text-zinc-400">Coach {COACH.name}</div>
+            <div className="text-sm text-zinc-400">Coach {coach.name}</div>
           )}
           <div className="ml-auto flex items-center gap-2">
             <button type="button" onClick={() => setScreen('connect')} className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">
@@ -452,6 +543,7 @@ export default function App() {
           <MessagesPage
             key={athlete.id}
             role={role}
+            coach={coach}
             athlete={athlete}
             athletes={athletes}
             messages={messages}
