@@ -3,12 +3,12 @@ import { FileText, Paperclip, Send } from 'lucide-react'
 import { COACH, fileToMedia, formatBytes, formatMessageDay, formatTime } from '../domain'
 import { Avatar } from './ui'
 
-export function MessagesPage({ role, athlete, athletes, messages, onSend, onOpenThread, onMarkRead }) {
+export function MessagesPage({ role, athlete, athletes, coach = COACH, messages, onSend, onOpenThread, onMarkRead }) {
   const thread = messages[athlete.id] || []
   const [text, setText] = useState('')
   const [attachment, setAttachment] = useState(null)
   const scroller = useRef(null)
-  const connected = Object.values(athletes).filter((a) => a.coachId === COACH.id)
+  const connected = Object.values(athletes).filter((a) => a.coachId === coach.id)
 
   useEffect(() => {
     onMarkRead(athlete.id)
@@ -61,9 +61,9 @@ export function MessagesPage({ role, athlete, athletes, messages, onSend, onOpen
       )}
       <section className="flex min-h-0 min-w-0 flex-col">
         <header className="flex items-center gap-3 border-b border-white/8 px-4 py-3">
-          <Avatar id={role === 'coach' ? athlete.id : COACH.id} name={role === 'coach' ? athlete.name : COACH.name} className="h-9 w-9 text-sm" />
+          <Avatar id={role === 'coach' ? athlete.id : coach.id} name={role === 'coach' ? athlete.name : coach.name} className="h-9 w-9 text-sm" />
           <div>
-            <div className="text-sm text-white">{role === 'coach' ? athlete.name : COACH.name}</div>
+            <div className="text-sm text-white">{role === 'coach' ? athlete.name : coach.name}</div>
             <div className="text-[11px] text-zinc-500">{role === 'coach' ? athlete.event : 'Coach'}</div>
           </div>
         </header>
