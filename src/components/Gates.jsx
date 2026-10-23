@@ -34,7 +34,7 @@ export function RoleGate({ onChoose }) {
   )
 }
 
-/** Create a profile (name → auto code) or find an existing one by name / ATH- / CH- code. */
+/** Create a profile (email → code → confirm) or find an existing one by name / ATH- / CH- code. */
 export function ProfileGate({
   role,
   coaches,
@@ -42,12 +42,19 @@ export function ProfileGate({
   onBack,
   onCreate,
   onSelect,
+  onRequestCode,
+  onConfirmCode,
 }) {
   const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
   const [sex, setSex] = useState('male')
   const [bodyweightKg, setBodyweightKg] = useState('83')
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
+  const [step, setStep] = useState('form') // form | code
+  const [verifyCode, setVerifyCode] = useState('')
+  const [previewCode, setPreviewCode] = useState(null)
+  const [error, setError] = useState('')
   const accent = role === 'coach' ? 'cyan' : 'lime'
 
   const directory = useMemo(() => {
@@ -62,16 +69,49 @@ export function ProfileGate({
     [directory, query],
   )
 
-  async function submitCreate(e) {
+  async function sendCode(e) {
     e.preventDefault()
-    if (!name.trim() || busy) return
+    if (!name.trim() || !email.trim() || busy) return
     setBusy(true)
+    setError('')
     try {
+      const result = await onRequestCode({
+        email: email.trim(),
+        role,
+        payload: {
+          name: name.trim(),
+          sex,
+          bodyweightKg: Number(bodyweightKg) || undefined,
+        },
+      })
+      setPreviewCode(result?.previewCode || null)
+      setStep('code')
+    } catch (err) {
+      setError(err?.message || 'Could not send code')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function submitVerify(e) {
+    e.preventDefault()
+    if (!verifyCode.trim() || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      await onConfirmCode({
+        email: email.trim(),
+        code: verifyCode.trim(),
+        role,
+      })
       await onCreate({
         name: name.trim(),
+        email: email.trim(),
         sex,
         bodyweightKg: Number(bodyweightKg) || undefined,
       })
+    } catch (err) {
+      setError(err?.message || 'Could not verify code')
     } finally {
       setBusy(false)
     }
@@ -94,49 +134,92 @@ export function ProfileGate({
         <div className="grid gap-4 lg:grid-cols-2">
           <Card className="p-5">
             <div className={`text-[10px] uppercase tracking-[0.16em] ${role === 'coach' ? 'text-cyan-300' : 'text-lime-300'}`}>New profile</div>
-            <h1 className="mt-2 font-display text-4xl text-white">What’s your name?</h1>
+            <h1 className="mt-2 font-display text-4xl text-white">{step === 'code' ? 'Enter your code' : 'Create your account'}</h1>
             <p className="mt-2 text-sm text-zinc-500">
-              We’ll create your account and generate a unique code
-              ({role === 'coach' ? 'CH-…' : 'ATH-…'}) you can share.
+              {step === 'code'
+                ? `We sent a 6-digit code to ${email}. Confirm it to finish creating your ${role} profile.`
+                : `Name + email, then confirm the code we email you. You’ll get a unique share code (${role === 'coach' ? 'CH-…' : 'ATH-…'}).`}
             </p>
-            <form className="mt-5 grid gap-3" onSubmit={submitCreate}>
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={role === 'coach' ? 'Sam Okonkwo' : 'David Thomas'}
-                className="rounded-lg border border-white/10 bg-[#151821] px-3 py-3 text-lg"
-                autoFocus
-              />
-              {role === 'athlete' && (
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="grid gap-1 text-xs">
-                    <span className="uppercase tracking-widest text-zinc-500">Sex</span>
-                    <select value={sex} onChange={(e) => setSex(e.target.value)} className="rounded-lg border border-white/10 bg-[#151821] px-3 py-2 text-sm">
-                      <option value="male">Male</option>
-                      <option value="female">Female</option>
-                    </select>
-                  </label>
-                  <label className="grid gap-1 text-xs">
-                    <span className="uppercase tracking-widest text-zinc-500">Bodyweight (kg)</span>
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="30"
-                      value={bodyweightKg}
-                      onChange={(e) => setBodyweightKg(e.target.value)}
-                      className="rounded-lg border border-white/10 bg-[#151821] px-3 py-2 text-sm"
-                    />
-                  </label>
-                </div>
-              )}
-              <button
-                type="submit"
-                disabled={!name.trim() || busy}
-                className={`rounded-lg px-4 py-3 text-sm font-semibold text-black disabled:opacity-50 ${role === 'coach' ? 'bg-cyan-400' : 'bg-lime-400'}`}
-              >
-                {busy ? 'Creating…' : `Create ${role} profile`}
-              </button>
-            </form>
+            {step === 'form' ? (
+              <form className="mt-5 grid gap-3" onSubmit={sendCode}>
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder={role === 'coach' ? 'Sam Okonkwo' : 'David Thomas'}
+                  className="rounded-lg border border-white/10 bg-[#151821] px-3 py-3 text-lg"
+                  autoFocus
+                />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@email.com"
+                  required
+                  className="rounded-lg border border-white/10 bg-[#151821] px-3 py-3 text-sm"
+                />
+                {role === 'athlete' && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="grid gap-1 text-xs">
+                      <span className="uppercase tracking-widest text-zinc-500">Sex</span>
+                      <select value={sex} onChange={(e) => setSex(e.target.value)} className="rounded-lg border border-white/10 bg-[#151821] px-3 py-2 text-sm">
+                        <option value="male">Male</option>
+                        <option value="female">Female</option>
+                      </select>
+                    </label>
+                    <label className="grid gap-1 text-xs">
+                      <span className="uppercase tracking-widest text-zinc-500">Bodyweight (kg)</span>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="30"
+                        value={bodyweightKg}
+                        onChange={(e) => setBodyweightKg(e.target.value)}
+                        className="rounded-lg border border-white/10 bg-[#151821] px-3 py-2 text-sm"
+                      />
+                    </label>
+                  </div>
+                )}
+                {error && <div className="rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div>}
+                <button
+                  type="submit"
+                  disabled={!name.trim() || !email.trim() || busy}
+                  className={`rounded-lg px-4 py-3 text-sm font-semibold text-black disabled:opacity-50 ${role === 'coach' ? 'bg-cyan-400' : 'bg-lime-400'}`}
+                >
+                  {busy ? 'Sending…' : 'Send verification code'}
+                </button>
+              </form>
+            ) : (
+              <form className="mt-5 grid gap-3" onSubmit={submitVerify}>
+                {previewCode && (
+                  <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-50">
+                    Email delivery isn’t configured on this project yet — use code <span className="font-mono font-semibold">{previewCode}</span> to continue.
+                  </div>
+                )}
+                <input
+                  value={verifyCode}
+                  onChange={(e) => setVerifyCode(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                  placeholder="6-digit code"
+                  inputMode="numeric"
+                  autoFocus
+                  className="rounded-lg border border-white/10 bg-[#151821] px-3 py-3 font-mono text-2xl tracking-[0.3em]"
+                />
+                {error && <div className="rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div>}
+                <button
+                  type="submit"
+                  disabled={verifyCode.trim().length < 4 || busy}
+                  className={`rounded-lg px-4 py-3 text-sm font-semibold text-black disabled:opacity-50 ${role === 'coach' ? 'bg-cyan-400' : 'bg-lime-400'}`}
+                >
+                  {busy ? 'Creating…' : `Confirm & create ${role}`}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setStep('form'); setVerifyCode(''); setPreviewCode(null); setError('') }}
+                  className="text-xs text-zinc-500"
+                >
+                  Back / change email
+                </button>
+              </form>
+            )}
           </Card>
 
           <Card className="p-5">

@@ -82,7 +82,7 @@ export function makeCoachCode() {
 }
 
 /** New athlete row for profile creation (no demo logs). Pass a DB-verified `code`. */
-export function createAthleteProfile({ name, code, sex = 'male', bodyweightKg = 83 }) {
+export function createAthleteProfile({ name, code, sex = 'male', bodyweightKg = 83, email = null }) {
   if (!code) throw new Error('createAthleteProfile requires a unique code from allocateUniqueUserCode')
   const pbs = { squat: 0, bench: 0, deadlift: 0 }
   const meet = isoFromDate(addDays(parseISO(todayISO()), 12 * 7))
@@ -92,6 +92,8 @@ export function createAthleteProfile({ name, code, sex = 'male', bodyweightKg = 
     id: `ath_${uid()}`,
     name: name.trim(),
     code,
+    email: email ? String(email).trim().toLowerCase() : null,
+    emailVerified: Boolean(email),
     coachId: null,
     sex: sexNorm,
     bodyweightKg: Number.isFinite(bw) && bw > 0 ? bw : (sexNorm === 'female' ? 63 : 83),
@@ -118,12 +120,14 @@ export function createAthleteProfile({ name, code, sex = 'male', bodyweightKg = 
 }
 
 /** Pass a DB-verified `code` from allocateUniqueUserCode. */
-export function createCoachProfile({ name, code }) {
+export function createCoachProfile({ name, code, email = null }) {
   if (!code) throw new Error('createCoachProfile requires a unique code from allocateUniqueUserCode')
   return {
     id: `ch_${uid()}`,
     name: name.trim(),
     code,
+    email: email ? String(email).trim().toLowerCase() : null,
+    emailVerified: Boolean(email),
   }
 }
 

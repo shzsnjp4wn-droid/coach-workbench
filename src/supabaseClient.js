@@ -19,7 +19,13 @@ const MEDIA_BUCKET = 'media'
 
 export function mapCoachRow(row) {
   if (!row) return null
-  return { id: row.id, name: row.name, code: row.code }
+  return {
+    id: row.id,
+    name: row.name,
+    code: row.code,
+    email: row.email || null,
+    emailVerified: Boolean(row.email_verified),
+  }
 }
 
 export function mapAthleteProfile(row) {
@@ -28,6 +34,8 @@ export function mapAthleteProfile(row) {
     id: row.id,
     name: row.name,
     code: row.code,
+    email: row.email || null,
+    emailVerified: Boolean(row.email_verified),
     coachId: row.coach_id ?? null,
     sex: row.sex === 'female' ? 'female' : 'male',
     bodyweightKg: row.bodyweight_kg == null ? null : Number(row.bodyweight_kg),
@@ -192,10 +200,14 @@ export async function fetchWorkspace() {
     messagesRes,
     stintsRes,
   ] = await Promise.all([
-    supabase.from('coaches').select('id, name, code').order('name'),
+    selectOrFallback(
+      'coaches',
+      () => supabase.from('coaches').select('id, name, code, email, email_verified').order('name'),
+      () => supabase.from('coaches').select('id, name, code').order('name'),
+    ),
     selectOrFallback(
       'athletes',
-      () => supabase.from('athletes').select('id, name, code, coach_id, sex, bodyweight_kg, event, meet_date, planning_mode, block_weeks, start_date, pbs, e1rm, accessory_library, lift_library').order('name'),
+      () => supabase.from('athletes').select('id, name, code, email, email_verified, coach_id, sex, bodyweight_kg, event, meet_date, planning_mode, block_weeks, start_date, pbs, e1rm, accessory_library, lift_library').order('name'),
       () => supabase.from('athletes').select('id, name, code, coach_id, event, meet_date, planning_mode, block_weeks, start_date, pbs, e1rm, accessory_library, lift_library').order('name'),
     ),
     selectOrFallback(
@@ -328,11 +340,19 @@ export async function upsertAthleteProfile(athlete) {
     ...base,
     sex: athlete.sex === 'female' ? 'female' : 'male',
     bodyweight_kg: athlete.bodyweightKg ?? null,
+    email: athlete.email || null,
+    email_verified: Boolean(athlete.emailVerified),
   }
   let { data, error } = await supabase.from('athletes').upsert(withGl, { onConflict: 'id' }).select('id')
   if (error && isMissingColumnError(error)) {
-    console.warn('[supabase] athletes missing sex/bodyweight_kg — run migration_coaching_units.sql')
-    ;({ data, error } = await supabase.from('athletes').upsert(base, { onConflict: 'id' }).select('id'))
+    console.warn('[supabase] athletes schema lag — run migrations')
+    const fallback = { ...base }
+    if (athlete.sex) fallback.sex = athlete.sex === 'female' ? 'female' : 'male'
+    if (athlete.bodyweightKg != null) fallback.bodyweight_kg = athlete.bodyweightKg
+    ;({ data, error } = await supabase.from('athletes').upsert(fallback, { onConflict: 'id' }).select('id'))
+    if (error && isMissingColumnError(error)) {
+      ;({ data, error } = await supabase.from('athletes').upsert(base, { onConflict: 'id' }).select('id'))
+    }
   }
   assertOk(error, 'upsert athlete')
   assertWrote(data, 'upsert athlete')
@@ -578,13 +598,136 @@ export async function allocateUniqueUserCode(kind, { maxAttempts = 16 } = {}) {
 }
 
 export async function insertCoach(coach) {
-  const { data, error } = await supabase
-    .from('coaches')
-    .insert({ id: coach.id, name: coach.name, code: coach.code })
-    .select('id, name, code')
+  const row = {
+    id: coach.id,
+    name: coach.name,
+    code: coach.code,
+    email: coach.email || null,
+    email_verified: Boolean(coach.emailVerified),
+  }
+  let { data, error } = await supabase.from('coaches').insert(row).select('id, name, code, email, email_verified')
+  if (error && isMissingColumnError(error)) {
+    ;({ data, error } = await supabase
+      .from('coaches')
+      .insert({ id: coach.id, name: coach.name, code: coach.code })
+      .select('id, name, code'))
+  }
   assertOk(error, 'insert coach')
   assertWrote(data, 'insert coach')
   return mapCoachRow(data[0])
+}
+
+function mintEmailCode() {
+  return String(Math.floor(100000 + Math.random() * 900000))
+}
+
+/** Store a 6-digit signup code and attempt to email it via Supabase Auth OTP. */
+export async function requestEmailVerification({ email, role, payload = {} }) {
+  const normalized = String(email || '').trim().toLowerCase()
+  if (!normalized || !normalized.includes('@')) {
+    throw new Error('Enter a valid email address')
+  }
+  const table = role === 'coach' ? 'coaches' : 'athletes'
+  const { data: existing, error: existErr } = await supabase
+    .from(table)
+    .select('id')
+    .ilike('email', normalized)
+    .maybeSingle()
+  if (existErr && !isMissingColumnError(existErr)) assertOk(existErr, 'check email')
+  if (existing) throw new Error('An account already uses that email')
+
+  const code = mintEmailCode()
+  const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString()
+  const { error: insertErr } = await supabase.from('email_verifications').insert({
+    email: normalized,
+    code,
+    role,
+    payload,
+    expires_at: expires,
+  })
+  if (insertErr) {
+    if (isMissingColumnError(insertErr) || /email_verifications|schema cache/i.test(insertErr.message || '')) {
+      throw new Error('Email verification is not set up — run supabase/migration_accounts.sql')
+    }
+    assertOk(insertErr, 'store verification code')
+  }
+
+  // Prefer Supabase Auth email delivery when the project has SMTP / Auth email enabled.
+  let delivered = false
+  const { error: otpErr } = await supabase.auth.signInWithOtp({
+    email: normalized,
+    options: { shouldCreateUser: true },
+  })
+  if (!otpErr) delivered = true
+  else console.warn('[supabase] Auth OTP email not sent — using app verification code', otpErr.message)
+
+  return {
+    email: normalized,
+    delivered,
+    // When Auth email is not configured, surface the code so signup still works.
+    previewCode: delivered ? null : code,
+  }
+}
+
+export async function confirmEmailVerification({ email, code, role }) {
+  const normalized = String(email || '').trim().toLowerCase()
+  const token = String(code || '').trim()
+  if (!normalized || !token) throw new Error('Email and code are required')
+
+  // Accept either our stored code or a Supabase Auth OTP.
+  const { data: rows, error } = await supabase
+    .from('email_verifications')
+    .select('*')
+    .eq('email', normalized)
+    .eq('role', role)
+    .is('consumed_at', null)
+    .gt('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false })
+    .limit(5)
+  if (error && !isMissingColumnError(error)) assertOk(error, 'load verification')
+
+  const match = (rows || []).find((r) => r.code === token)
+  if (match) {
+    await supabase
+      .from('email_verifications')
+      .update({ consumed_at: new Date().toISOString() })
+      .eq('id', match.id)
+    return { email: normalized, payload: match.payload || {}, via: 'app' }
+  }
+
+  const { data: authData, error: authErr } = await supabase.auth.verifyOtp({
+    email: normalized,
+    token,
+    type: 'email',
+  })
+  if (authErr || !authData?.user) {
+    throw new Error('Invalid or expired code')
+  }
+  return { email: normalized, payload: {}, via: 'auth' }
+}
+
+export async function deleteAccount({ role, id }) {
+  if (!id) throw new Error('Missing account id')
+  if (role === 'coach') {
+    await supabase.from('athletes').update({ coach_id: null }).eq('coach_id', id)
+    await supabase.from('coaching_stints').delete().eq('coach_id', id)
+    await supabase.from('messages').delete().eq('coach_id', id)
+    await supabase.from('set_logs').delete().eq('coach_id', id)
+    await supabase.from('videos').delete().eq('coach_id', id)
+    await supabase.from('e1rm_series').delete().eq('coach_id', id)
+    await supabase.from('schedule_overrides').delete().eq('coach_id', id)
+    await supabase.from('plans').delete().eq('coach_id', id)
+    await supabase.from('blocks').delete().eq('coach_id', id)
+    const { data, error } = await supabase.from('coaches').delete().eq('id', id).select('id')
+    assertOk(error, 'delete coach')
+    assertWrote(data, 'delete coach')
+    return
+  }
+  await supabase.from('set_logs').update({ video_id: null }).eq('athlete_id', id)
+  await supabase.from('videos').update({ log_id: null }).eq('athlete_id', id)
+  const { data, error } = await supabase.from('athletes').delete().eq('id', id).select('id')
+  assertOk(error, 'delete athlete')
+  assertWrote(data, 'delete athlete')
 }
 
 export async function insertAthleteWithStructure(athlete) {

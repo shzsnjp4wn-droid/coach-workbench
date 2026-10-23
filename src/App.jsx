@@ -18,6 +18,7 @@ import {
   estimatedTotalKg,
   findLog,
   fmtKg,
+  formatMeetDate,
   messagesForPair,
   normalizeBlocks,
   pushE1rm,
@@ -31,17 +32,20 @@ import {
   unreadCount,
 } from './domain'
 import {
+  allocateUniqueUserCode,
+  confirmEmailVerification,
+  deleteAccount,
   deleteVideo,
   endActiveStint,
   fetchWorkspace,
   formatSupabaseError,
-  allocateUniqueUserCode,
   insertAthleteWithStructure,
   insertCoach,
   insertMessage,
   markMessagesRead,
   persistAthleteStructure,
   persistPlan,
+  requestEmailVerification,
   startCoachingStint,
   uploadMedia,
   upsertE1rmPoint,
@@ -350,10 +354,10 @@ export default function App() {
     writeSession(next)
   }
 
-  async function createProfile({ name, sex, bodyweightKg }) {
+  async function createProfile({ name, sex, bodyweightKg, email }) {
     if (role === 'coach') {
       const code = await allocateUniqueUserCode('coach')
-      const profile = createCoachProfile({ name, code })
+      const profile = createCoachProfile({ name, code, email })
       await insertCoach(profile)
       setCoaches((prev) => [...prev, profile])
       setCoach(profile)
@@ -363,7 +367,7 @@ export default function App() {
       return
     }
     const code = await allocateUniqueUserCode('athlete')
-    const profile = createAthleteProfile({ name, code, sex, bodyweightKg })
+    const profile = createAthleteProfile({ name, code, sex, bodyweightKg, email })
     await insertAthleteWithStructure(profile)
     const nextAthletes = { ...athletesRef.current, [profile.id]: { ...profile, stints: [], activeStint: null } }
     athletesRef.current = nextAthletes
@@ -377,6 +381,33 @@ export default function App() {
     saveSession({ role: 'athlete', athleteId: profile.id })
     setToast(`Welcome ${profile.name} · ${profile.code}`)
     setScreen('connect')
+  }
+
+  async function handleDeleteAccount() {
+    const label = role === 'coach' ? coach?.name : rawAthlete?.name
+    const id = role === 'coach' ? coach?.id : rawAthlete?.id
+    if (!id) return
+    if (!window.confirm(`Delete ${label}'s account permanently? This cannot be undone.`)) return
+    try {
+      await deleteAccount({ role, id })
+      if (role === 'coach') {
+        setCoaches((prev) => prev.filter((c) => c.id !== id))
+        setCoach(FALLBACK_COACH)
+      } else {
+        const next = { ...athletesRef.current }
+        delete next[id]
+        athletesRef.current = next
+        setAthletes(next)
+        setAthleteId(null)
+      }
+      localStorage.removeItem(SESSION_KEY)
+      setScreen('role')
+      setRole(null)
+      setToast('Account deleted')
+    } catch (err) {
+      console.error('[supabase] delete account failed', err)
+      setToast(err?.message || formatSupabaseError(err, 'delete account'))
+    }
   }
 
   function selectExistingProfile(person) {
@@ -491,8 +522,10 @@ export default function App() {
     if (!current) return
     const cid = current.coachId || activeUnitCoachId
     if (!cid) {
-      setToast('Connect to a coach before logging sets')
-      return
+      const err = new Error('Connect to a coach before logging sets')
+      setToast(err.message)
+      setSaveState('error')
+      throw err
     }
 
     const existing = findLog(current.logs, block.id, weekIndex, dayIndex, row.setKey)
@@ -815,12 +848,15 @@ export default function App() {
           coaches={coaches}
           athletes={athletes}
           onBack={() => { setScreen('role'); setRole(null) }}
+          onRequestCode={requestEmailVerification}
+          onConfirmCode={confirmEmailVerification}
           onCreate={async (details) => {
             try {
               await createProfile(details)
             } catch (err) {
               console.error('[supabase] create profile failed', err)
               setToast(err?.message || formatSupabaseError(err, 'create profile'))
+              throw err
             }
           }}
           onSelect={selectExistingProfile}
@@ -879,6 +915,10 @@ export default function App() {
           ) : (
             <div className="text-sm text-zinc-400">Coach {coach.name}</div>
           )}
+          <div className="rounded-md border border-white/10 bg-black/30 px-2.5 py-1.5 text-right">
+            <div className="text-[9px] uppercase tracking-widest text-zinc-500">Today</div>
+            <div className="font-mono text-xs text-zinc-200">{formatMeetDate(todayISO())}</div>
+          </div>
           <div className="ml-auto flex items-center gap-2">
             <button type="button" onClick={() => setScreen('connect')} className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">
               {role === 'coach' ? 'Roster' : 'Connect'}
@@ -889,6 +929,13 @@ export default function App() {
               className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400"
             >
               Profiles
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDeleteAccount()}
+              className="rounded-md border border-red-400/30 px-3 py-1.5 text-xs uppercase tracking-wider text-red-300/90"
+            >
+              Delete account
             </button>
             <button
               type="button"
@@ -961,7 +1008,11 @@ export default function App() {
             selectedBlock={selectedBlock}
             selectedBlockId={selectedBlockId}
             blockStart={blockStart}
+            selectedWeek={selectedWeek}
+            selectedDay={selectedDay}
             onSelectBlock={(id) => ensureBlock(id)}
+            onSelectWeek={setSelectedWeek}
+            onSelectDay={setSelectedDay}
             onOpenDay={(weekIndex, dayIndex) => { setSelectedWeek(weekIndex); setSelectedDay(dayIndex); setPage('today') }}
             onStartDate={setStartDate}
           />

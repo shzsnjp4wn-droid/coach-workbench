@@ -41,7 +41,15 @@ export function AthleteToday({
 }) {
   const [drafts, setDrafts] = useState({})
   const [mismatch, setMismatch] = useState(null)
+  const [mismatchError, setMismatchError] = useState('')
   const [busyKey, setBusyKey] = useState(null)
+  const [nowTick, setNowTick] = useState(() => Date.now())
+
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 30_000)
+    return () => clearInterval(id)
+  }, [])
+  void nowTick
   const logsRef = useRef(client.logs)
   const clientRef = useRef(client)
   const planRef = useRef(plan)
@@ -87,6 +95,7 @@ export function AthleteToday({
     const rpe = Number(draft?.rpe)
     if (!weight || !reps || !rpe) return
     setBusyKey(row.setKey)
+    setMismatchError('')
     try {
       await onCommit({
         block: selectedBlock,
@@ -102,6 +111,15 @@ export function AthleteToday({
       })
       setDrafts((d) => ({ ...d, [row.setKey]: { ...d[row.setKey], media: null } }))
       setMismatch(null)
+      setMismatchError('')
+    } catch (err) {
+      const message = err?.message || 'Save failed'
+      setMismatchError(message)
+      // Keep the modal open so the athlete can retry or cancel — don't leave them stuck
+      // with a toast behind a blocking dialog.
+      if (!mismatch) {
+        // Direct log (no modal) — parent toast already covers this.
+      }
     } finally {
       setBusyKey(null)
     }
@@ -109,13 +127,16 @@ export function AthleteToday({
 
   function attempt(row) {
     const prescribed = isoFromDate(calendarDate(client.startDate, selectedWeek, selectedDay))
-    if (prescribed !== todayISO()) {
-      const today = new Date()
+    const today = todayISO()
+    if (prescribed !== today) {
+      const d = new Date()
+      setMismatchError('')
       setMismatch({
         row,
         prescribedISO: prescribed,
         prescribedWeekday: WEEKDAYS[selectedDay],
-        actualWeekday: WEEKDAYS[(today.getDay() + 6) % 7],
+        actualWeekday: WEEKDAYS[(d.getDay() + 6) % 7],
+        todayISO: today,
       })
       return
     }
@@ -140,6 +161,10 @@ export function AthleteToday({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <div className="rounded-md border border-lime-400/30 bg-lime-400/10 px-2.5 py-1.5 text-right">
+              <div className="text-[9px] uppercase tracking-widest text-lime-300/80">Today</div>
+              <div className="font-mono text-xs text-lime-100">{formatMeetDate(todayISO())}</div>
+            </div>
             <select value={selectedBlockId || ''} onChange={(e) => onSelectBlock(e.target.value)} className="rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm">
               {blocks.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
@@ -283,7 +308,7 @@ export function AthleteToday({
                         Replace
                         <input
                           type="file"
-                          accept="video/*"
+                          accept="video/*,image/*"
                           className="hidden"
                           onChange={(e) => {
                             const file = e.target.files?.[0]
@@ -300,7 +325,7 @@ export function AthleteToday({
                       Add clip
                       <input
                         type="file"
-                        accept="video/*"
+                        accept="video/*,image/*"
                         className="hidden"
                         onChange={(e) => {
                           const file = e.target.files?.[0]
@@ -335,12 +360,40 @@ export function AthleteToday({
           <div className="max-w-md rounded-2xl border border-white/10 bg-[#12141c] p-5">
             <div className="font-display text-2xl text-white">Did you do this workout today?</div>
             <p className="mt-2 text-sm text-zinc-400">
-              This session was prescribed for {mismatch.prescribedWeekday}. Today is {mismatch.actualWeekday}. Confirming tags the mesocycle for you and your coach.
+              This session was prescribed for {mismatch.prescribedWeekday} ({formatMeetDate(mismatch.prescribedISO)}).
+              {' '}Today is {mismatch.actualWeekday} ({formatMeetDate(mismatch.todayISO || todayISO())}).
+              Confirming tags the mesocycle for you and your coach.
             </p>
+            {mismatchError && (
+              <div className="mt-3 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+                {mismatchError}
+              </div>
+            )}
             <div className="mt-4 flex flex-wrap gap-2">
-              <button type="button" onClick={() => void commitRow(mismatch.row, true, todayISO())} className="rounded-lg bg-lime-400 px-4 py-2 text-sm font-semibold text-black">Yes, I did it today</button>
-              <button type="button" onClick={() => void commitRow(mismatch.row, false, mismatch.prescribedISO)} className="rounded-lg border border-white/15 px-4 py-2 text-sm">No, log against prescribed day</button>
-              <button type="button" onClick={() => setMismatch(null)} className="px-3 text-sm text-zinc-500">Cancel</button>
+              <button
+                type="button"
+                disabled={busyKey === mismatch.row.setKey}
+                onClick={() => void commitRow(mismatch.row, true, todayISO())}
+                className="rounded-lg bg-lime-400 px-4 py-2 text-sm font-semibold text-black disabled:opacity-60"
+              >
+                {busyKey === mismatch.row.setKey ? 'Saving…' : 'Yes, I did it today'}
+              </button>
+              <button
+                type="button"
+                disabled={busyKey === mismatch.row.setKey}
+                onClick={() => void commitRow(mismatch.row, false, mismatch.prescribedISO)}
+                className="rounded-lg border border-white/15 px-4 py-2 text-sm disabled:opacity-60"
+              >
+                No, log against prescribed day
+              </button>
+              <button
+                type="button"
+                disabled={busyKey === mismatch.row.setKey}
+                onClick={() => { setMismatch(null); setMismatchError('') }}
+                className="px-3 text-sm text-zinc-500"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>
