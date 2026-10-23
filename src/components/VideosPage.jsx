@@ -46,7 +46,7 @@ export function VideosPage({ athlete, role, onOpenDay }) {
       {videos.length === 0 && (
         <Card className="p-8 text-center">
           <Film className="mx-auto text-zinc-600" />
-          <p className="mt-3 text-sm text-zinc-400">No set videos yet. Log a set on the training day and attach a clip. The caption is written from that log.</p>
+          <p className="mt-3 text-sm text-zinc-400">No set videos yet. Log a set on the training day and attach a clip — it uploads to Storage and stays here after refresh.</p>
         </Card>
       )}
 
@@ -61,8 +61,8 @@ export function VideosPage({ athlete, role, onOpenDay }) {
             {group.items.map((video) => (
               <Card key={video.id} className="overflow-hidden">
                 <div className={`relative aspect-video ${video.lift === 'squat' ? 'bg-violet-950' : video.lift === 'bench' ? 'bg-indigo-950' : video.lift === 'deadlift' ? 'bg-fuchsia-950' : 'bg-zinc-900'}`}>
-                  {video.url && video.type.startsWith('video') ? (
-                    <video src={video.url} controls playsInline className="h-full w-full bg-black object-contain" />
+                  {video.url && (!video.type || video.type.startsWith('video')) ? (
+                    <video src={video.url} controls playsInline preload="metadata" className="h-full w-full bg-black object-contain" />
                   ) : video.url && video.type.startsWith('image') ? (
                     <img src={video.url} alt={video.caption} className="h-full w-full object-cover" />
                   ) : (

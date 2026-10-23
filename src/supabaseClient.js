@@ -29,6 +29,8 @@ export function mapAthleteProfile(row) {
     name: row.name,
     code: row.code,
     coachId: row.coach_id ?? null,
+    sex: row.sex === 'female' ? 'female' : 'male',
+    bodyweightKg: row.bodyweight_kg == null ? null : Number(row.bodyweight_kg),
     event: row.event || '',
     meetDate: row.meet_date,
     planningMode: row.planning_mode || 'meet',
@@ -38,6 +40,24 @@ export function mapAthleteProfile(row) {
     e1rm: row.e1rm || { squat: 0, bench: 0, deadlift: 0 },
     accessoryLibrary: row.accessory_library || [],
     liftLibrary: row.lift_library || {},
+  }
+}
+
+export function mapStintRow(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    athleteId: row.athlete_id,
+    coachId: row.coach_id,
+    status: row.status,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    startBodyweightKg: row.start_bodyweight_kg == null ? null : Number(row.start_bodyweight_kg),
+    startTotalKg: row.start_total_kg == null ? null : Number(row.start_total_kg),
+    startDots: row.start_dots == null ? null : Number(row.start_dots),
+    endTotalKg: row.end_total_kg == null ? null : Number(row.end_total_kg),
+    endDots: row.end_dots == null ? null : Number(row.end_dots),
+    transferHistory: Boolean(row.transfer_history),
   }
 }
 
@@ -58,6 +78,7 @@ function mapLogRow(row) {
     e1: row.e1 == null ? null : Number(row.e1),
     date: row.date,
     videoId: row.video_id,
+    coachId: row.coach_id ?? null,
   }
 }
 
@@ -81,6 +102,7 @@ function mapVideoRow(row) {
     type: row.type || '',
     name: row.name || '',
     caption: row.caption || '',
+    coachId: row.coach_id ?? null,
   }
 }
 
@@ -92,6 +114,7 @@ function mapOverrideRow(row) {
     prescribedWeekday: row.prescribed_weekday,
     actualWeekday: row.actual_weekday,
     date: row.date,
+    coachId: row.coach_id ?? null,
   }
 }
 
@@ -103,6 +126,7 @@ function mapMessageRow(row) {
     at: row.at,
     attachment: row.attachment,
     unread: Boolean(row.unread),
+    coachId: row.coach_id ?? null,
   }
 }
 
@@ -134,6 +158,26 @@ function assertWrote(data, label) {
   return data
 }
 
+function requireCoachId(coachId, label) {
+  if (!coachId) throw new Error(`${label}: active coach_id is required`)
+  return coachId
+}
+
+function isMissingColumnError(error) {
+  const msg = error?.message || ''
+  return /column|does not exist|schema cache/i.test(msg)
+}
+
+async function selectOrFallback(label, primary, fallback) {
+  const first = await primary()
+  if (!first.error) return first
+  if (fallback && isMissingColumnError(first.error)) {
+    console.warn(`[supabase] ${label} schema lag — falling back. Run supabase/migration_coaching_units.sql`, first.error.message)
+    return fallback()
+  }
+  return first
+}
+
 /** Load the full app workspace from Supabase (no domain.js mock merge). */
 export async function fetchWorkspace() {
   const [
@@ -146,16 +190,30 @@ export async function fetchWorkspace() {
     seriesRes,
     overridesRes,
     messagesRes,
+    stintsRes,
   ] = await Promise.all([
     supabase.from('coaches').select('id, name, code').order('name'),
-    supabase.from('athletes').select('id, name, code, coach_id, event, meet_date, planning_mode, block_weeks, start_date, pbs, e1rm, accessory_library, lift_library').order('name'),
-    supabase.from('blocks').select('athlete_id, block_key, name, weeks, position').order('position'),
-    supabase.from('plans').select('athlete_id, block_key, same_every_week, frequency, weeks'),
+    selectOrFallback(
+      'athletes',
+      () => supabase.from('athletes').select('id, name, code, coach_id, sex, bodyweight_kg, event, meet_date, planning_mode, block_weeks, start_date, pbs, e1rm, accessory_library, lift_library').order('name'),
+      () => supabase.from('athletes').select('id, name, code, coach_id, event, meet_date, planning_mode, block_weeks, start_date, pbs, e1rm, accessory_library, lift_library').order('name'),
+    ),
+    selectOrFallback(
+      'blocks',
+      () => supabase.from('blocks').select('athlete_id, coach_id, block_key, name, weeks, position').order('position'),
+      () => supabase.from('blocks').select('athlete_id, block_key, name, weeks, position').order('position'),
+    ),
+    selectOrFallback(
+      'plans',
+      () => supabase.from('plans').select('athlete_id, coach_id, block_key, same_every_week, frequency, weeks'),
+      () => supabase.from('plans').select('athlete_id, block_key, same_every_week, frequency, weeks'),
+    ),
     supabase.from('set_logs').select('*').order('date', { ascending: false }),
     supabase.from('videos').select('*').order('date', { ascending: false }),
     supabase.from('e1rm_series').select('*').order('date', { ascending: true }),
     supabase.from('schedule_overrides').select('*'),
     supabase.from('messages').select('*').order('at', { ascending: true }),
+    supabase.from('coaching_stints').select('*').order('started_at', { ascending: false }),
   ])
 
   for (const [label, res] of [
@@ -168,7 +226,12 @@ export async function fetchWorkspace() {
     ['e1rm_series', seriesRes],
     ['schedule_overrides', overridesRes],
     ['messages', messagesRes],
+    ['coaching_stints', stintsRes],
   ]) {
+    if (label === 'coaching_stints' && res.error) {
+      console.warn('[supabase] coaching_stints missing — run supabase/migration_coaching_units.sql', res.error.message)
+      continue
+    }
     assertOk(res.error, `load ${label}`)
   }
 
@@ -181,13 +244,14 @@ export async function fetchWorkspace() {
   const series = seriesRes.data || []
   const overrides = overridesRes.data || []
   const messageRows = messagesRes.data || []
+  const stints = ((stintsRes.error ? [] : stintsRes.data) || []).map(mapStintRow)
 
   const athletes = {}
   for (const profile of profiles) {
     const athleteBlocks = blocks
       .filter((b) => b.athlete_id === profile.id)
       .sort((a, b) => a.position - b.position)
-      .map((b) => ({ id: b.block_key, name: b.name, weeks: b.weeks }))
+      .map((b) => ({ id: b.block_key, name: b.name, weeks: b.weeks, coachId: b.coach_id ?? null }))
 
     const athletePlans = {}
     for (const p of plans.filter((row) => row.athlete_id === profile.id)) {
@@ -195,6 +259,7 @@ export async function fetchWorkspace() {
         sameEveryWeek: Boolean(p.same_every_week),
         frequency: p.frequency || { squat: 2, bench: 2, deadlift: 1 },
         weeks: Array.isArray(p.weeks) ? p.weeks : [],
+        coachId: p.coach_id ?? null,
       }
     }
 
@@ -211,10 +276,13 @@ export async function fetchWorkspace() {
           squat: row.squat == null ? null : Number(row.squat),
           bench: row.bench == null ? null : Number(row.bench),
           deadlift: row.deadlift == null ? null : Number(row.deadlift),
+          coachId: row.coach_id ?? null,
         })),
       scheduleOverrides: overrides
         .filter((row) => row.athlete_id === profile.id)
         .map(mapOverrideRow),
+      stints: stints.filter((s) => s.athleteId === profile.id),
+      activeStint: stints.find((s) => s.athleteId === profile.id && s.status === 'active') || null,
     }
   }
 
@@ -225,7 +293,7 @@ export async function fetchWorkspace() {
     messages[row.athlete_id].push(mapMessageRow(row))
   }
 
-  return { coaches, athletes, messages }
+  return { coaches, athletes, messages, stints }
 }
 
 export async function updateAthleteCoachId(athleteId, coachId) {
@@ -240,37 +308,45 @@ export async function updateAthleteCoachId(athleteId, coachId) {
 }
 
 export async function upsertAthleteProfile(athlete) {
-  const { data, error } = await supabase
-    .from('athletes')
-    .upsert({
-      id: athlete.id,
-      name: athlete.name,
-      code: athlete.code,
-      coach_id: athlete.coachId,
-      event: athlete.event,
-      meet_date: athlete.meetDate,
-      planning_mode: athlete.planningMode,
-      block_weeks: athlete.blockWeeks,
-      start_date: athlete.startDate,
-      pbs: athlete.pbs,
-      e1rm: athlete.e1rm,
-      accessory_library: athlete.accessoryLibrary,
-      lift_library: athlete.liftLibrary,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'id' })
-    .select('id')
+  const base = {
+    id: athlete.id,
+    name: athlete.name,
+    code: athlete.code,
+    coach_id: athlete.coachId,
+    event: athlete.event,
+    meet_date: athlete.meetDate,
+    planning_mode: athlete.planningMode,
+    block_weeks: athlete.blockWeeks,
+    start_date: athlete.startDate,
+    pbs: athlete.pbs,
+    e1rm: athlete.e1rm,
+    accessory_library: athlete.accessoryLibrary,
+    lift_library: athlete.liftLibrary,
+    updated_at: new Date().toISOString(),
+  }
+  const withGl = {
+    ...base,
+    sex: athlete.sex === 'female' ? 'female' : 'male',
+    bodyweight_kg: athlete.bodyweightKg ?? null,
+  }
+  let { data, error } = await supabase.from('athletes').upsert(withGl, { onConflict: 'id' }).select('id')
+  if (error && isMissingColumnError(error)) {
+    console.warn('[supabase] athletes missing sex/bodyweight_kg — run migration_coaching_units.sql')
+    ;({ data, error } = await supabase.from('athletes').upsert(base, { onConflict: 'id' }).select('id'))
+  }
   assertOk(error, 'upsert athlete')
   assertWrote(data, 'upsert athlete')
 }
 
-export async function syncBlocks(athleteId, blocks) {
+export async function syncBlocks(athleteId, blocks, coachId) {
+  const cid = requireCoachId(coachId, 'sync blocks')
   const { data: existing, error: readError } = await supabase
     .from('blocks')
     .select('block_key')
     .eq('athlete_id', athleteId)
+    .eq('coach_id', cid)
   assertOk(readError, 'read blocks')
 
-  // Never wipe every block because of a bad empty client payload (cascades wipe plans).
   if (!blocks.length) {
     if ((existing || []).length) {
       throw new Error('sync blocks: refusing to delete all blocks from an empty payload')
@@ -285,12 +361,14 @@ export async function syncBlocks(athleteId, blocks) {
       .from('blocks')
       .delete()
       .eq('athlete_id', athleteId)
+      .eq('coach_id', cid)
       .in('block_key', toDelete)
     assertOk(error, 'delete blocks')
   }
 
   const rows = blocks.map((b, position) => ({
     athlete_id: athleteId,
+    coach_id: cid,
     block_key: b.id,
     name: b.name,
     weeks: b.weeks,
@@ -298,34 +376,38 @@ export async function syncBlocks(athleteId, blocks) {
   }))
   const { data, error } = await supabase
     .from('blocks')
-    .upsert(rows, { onConflict: 'athlete_id,block_key' })
+    .upsert(rows, { onConflict: 'athlete_id,coach_id,block_key' })
     .select('block_key')
   assertOk(error, 'upsert blocks')
   assertWrote(data, 'upsert blocks')
 }
 
-export async function upsertPlan(athleteId, blockKey, plan) {
+export async function upsertPlan(athleteId, blockKey, plan, coachId) {
+  const cid = requireCoachId(coachId || plan.coachId, 'upsert plan')
   const { data, error } = await supabase
     .from('plans')
     .upsert({
       athlete_id: athleteId,
+      coach_id: cid,
       block_key: blockKey,
       same_every_week: plan.sameEveryWeek,
       frequency: plan.frequency,
       weeks: plan.weeks,
       updated_at: new Date().toISOString(),
-    }, { onConflict: 'athlete_id,block_key' })
+    }, { onConflict: 'athlete_id,coach_id,block_key' })
     .select('block_key')
   assertOk(error, 'upsert plan')
   assertWrote(data, 'upsert plan')
 }
 
-export async function upsertSetLog(athleteId, log) {
+export async function upsertSetLog(athleteId, log, coachId) {
+  const cid = requireCoachId(coachId || log.coachId, 'upsert set_log')
   const { data, error } = await supabase
     .from('set_logs')
     .upsert({
       id: log.id,
       athlete_id: athleteId,
+      coach_id: cid,
       set_key: log.setKey,
       block_key: log.blockId,
       week_index: log.weekIndex,
@@ -346,12 +428,14 @@ export async function upsertSetLog(athleteId, log) {
   assertWrote(data, 'upsert set_log')
 }
 
-export async function upsertVideo(athleteId, video) {
+export async function upsertVideo(athleteId, video, coachId) {
+  const cid = requireCoachId(coachId || video.coachId, 'upsert video')
   const { data, error } = await supabase
     .from('videos')
     .upsert({
       id: video.id,
       athlete_id: athleteId,
+      coach_id: cid,
       log_id: video.logId,
       date: video.date,
       block_key: video.blockId,
@@ -375,44 +459,50 @@ export async function upsertVideo(athleteId, video) {
   assertWrote(data, 'upsert video')
 }
 
-export async function upsertE1rmPoint(athleteId, point) {
+export async function upsertE1rmPoint(athleteId, point, coachId) {
+  const cid = requireCoachId(coachId || point.coachId, 'upsert e1rm_series')
   const { data, error } = await supabase
     .from('e1rm_series')
     .upsert({
       athlete_id: athleteId,
+      coach_id: cid,
       date: point.date,
       squat: point.squat,
       bench: point.bench,
       deadlift: point.deadlift,
-    }, { onConflict: 'athlete_id,date' })
+    }, { onConflict: 'athlete_id,coach_id,date' })
     .select('date')
   assertOk(error, 'upsert e1rm_series')
   assertWrote(data, 'upsert e1rm_series')
 }
 
-export async function upsertScheduleOverride(athleteId, override) {
+export async function upsertScheduleOverride(athleteId, override, coachId) {
+  const cid = requireCoachId(coachId || override.coachId, 'upsert schedule_override')
   const { data, error } = await supabase
     .from('schedule_overrides')
     .upsert({
       athlete_id: athleteId,
+      coach_id: cid,
       block_key: override.blockId,
       week_index: override.weekIndex,
       day_index: override.dayIndex,
       prescribed_weekday: override.prescribedWeekday,
       actual_weekday: override.actualWeekday,
       date: override.date,
-    }, { onConflict: 'athlete_id,block_key,week_index,day_index' })
+    }, { onConflict: 'athlete_id,coach_id,block_key,week_index,day_index' })
     .select('block_key')
   assertOk(error, 'upsert schedule_override')
   assertWrote(data, 'upsert schedule_override')
 }
 
-export async function insertMessage(athleteId, message) {
+export async function insertMessage(athleteId, message, coachId) {
+  const cid = requireCoachId(coachId || message.coachId, 'insert message')
   const { data, error } = await supabase
     .from('messages')
     .insert({
       id: message.id,
       athlete_id: athleteId,
+      coach_id: cid,
       from_role: message.from,
       text: message.text || '',
       at: message.at,
@@ -424,34 +514,39 @@ export async function insertMessage(athleteId, message) {
   assertWrote(data, 'insert message')
 }
 
-export async function markMessagesRead(athleteId, readerRole) {
-  const { error } = await supabase
+export async function markMessagesRead(athleteId, readerRole, coachId) {
+  let q = supabase
     .from('messages')
     .update({ unread: false })
     .eq('athlete_id', athleteId)
     .eq('unread', true)
     .neq('from_role', readerRole)
-    .select('id')
+  if (coachId) q = q.eq('coach_id', coachId)
+  const { error } = await q.select('id')
   assertOk(error, 'mark messages read')
 }
 
 export async function uploadMedia(athleteId, objectId, media) {
-  if (!media?.url) {
-    throw new Error('upload media: missing local file url')
+  let blob = media?.file instanceof Blob ? media.file : null
+  if (!blob && media?.url) {
+    try {
+      blob = await fetch(media.url).then((r) => r.blob())
+    } catch (err) {
+      throw new Error(`upload media: could not read file (${err?.message || err})`)
+    }
   }
-  let blob
-  try {
-    blob = await fetch(media.url).then((r) => r.blob())
-  } catch (err) {
-    throw new Error(`upload media: could not read file (${err?.message || err})`)
-  }
+  if (!blob) throw new Error('upload media: missing local file')
   const ext = (media.name && media.name.includes('.'))
     ? media.name.split('.').pop()
-    : (blob.type.split('/')[1] || 'bin')
+    : (blob.type?.split('/')[1] || 'bin')
   const path = `${athleteId}/${objectId}.${ext}`
   const { error: upError } = await supabase.storage
     .from(MEDIA_BUCKET)
-    .upload(path, blob, { upsert: true, contentType: media.type || blob.type || 'application/octet-stream' })
+    .upload(path, blob, {
+      upsert: true,
+      contentType: media.type || blob.type || 'application/octet-stream',
+      cacheControl: '3600',
+    })
   if (upError) {
     throw new Error(
       formatSupabaseError(upError, 'upload media')
@@ -463,10 +558,6 @@ export async function uploadMedia(athleteId, objectId, media) {
   return data.publicUrl
 }
 
-/**
- * Mint ATH-… / CH-… until the code is unused in the matching table.
- * Long random bodies make collisions vanishingly rare; we still re-roll if one hits.
- */
 export async function allocateUniqueUserCode(kind, { maxAttempts = 16 } = {}) {
   const table = kind === 'coach' ? 'coaches' : 'athletes'
   const mint = kind === 'coach' ? makeCoachCode : makeAthleteCode
@@ -498,9 +589,11 @@ export async function insertCoach(coach) {
 
 export async function insertAthleteWithStructure(athlete) {
   await upsertAthleteProfile(athlete)
-  await syncBlocks(athlete.id, athlete.blocks || [])
-  for (const [blockKey, plan] of Object.entries(athlete.plans || {})) {
-    if (plan) await upsertPlan(athlete.id, blockKey, plan)
+  if (athlete.coachId && (athlete.blocks || []).length) {
+    await syncBlocks(athlete.id, athlete.blocks || [], athlete.coachId)
+    for (const [blockKey, plan] of Object.entries(athlete.plans || {})) {
+      if (plan) await upsertPlan(athlete.id, blockKey, { ...plan, coachId: athlete.coachId }, athlete.coachId)
+    }
   }
 }
 
@@ -519,16 +612,81 @@ export async function deleteVideo(athleteId, videoId) {
   assertOk(error, 'delete video')
 }
 
-export async function persistAthleteStructure(athlete) {
+export async function persistAthleteStructure(athlete, coachId) {
   await upsertAthleteProfile(athlete)
-  await syncBlocks(athlete.id, athlete.blocks || [])
-  // Also flush in-memory plans so a profile/block save cannot leave plan edits unsaved.
+  const cid = coachId || athlete.coachId
+  if (!cid) return
+  const blocks = (athlete.blocks || []).map((b) => ({ ...b, coachId: b.coachId || cid }))
+  await syncBlocks(athlete.id, blocks, cid)
   for (const [blockKey, plan] of Object.entries(athlete.plans || {})) {
     if (!plan) continue
-    await upsertPlan(athlete.id, blockKey, plan)
+    if (plan.coachId && plan.coachId !== cid) continue
+    await upsertPlan(athlete.id, blockKey, { ...plan, coachId: cid }, cid)
   }
 }
 
-export async function persistPlan(athleteId, blockKey, plan) {
-  await upsertPlan(athleteId, blockKey, plan)
+export async function persistPlan(athleteId, blockKey, plan, coachId) {
+  await upsertPlan(athleteId, blockKey, plan, coachId || plan.coachId)
+}
+
+export async function endActiveStint(athleteId, { endTotalKg, endDots } = {}) {
+  const { data: active, error: findErr } = await supabase
+    .from('coaching_stints')
+    .select('*')
+    .eq('athlete_id', athleteId)
+    .eq('status', 'active')
+    .maybeSingle()
+  assertOk(findErr, 'find active stint')
+  if (!active) return null
+  const { data, error } = await supabase
+    .from('coaching_stints')
+    .update({
+      status: 'ended',
+      ended_at: new Date().toISOString(),
+      end_total_kg: endTotalKg ?? null,
+      end_dots: endDots ?? null,
+    })
+    .eq('id', active.id)
+    .select('*')
+    .single()
+  assertOk(error, 'end coaching stint')
+  await updateAthleteCoachId(athleteId, null)
+  return mapStintRow(data)
+}
+
+export async function startCoachingStint({
+  athleteId,
+  coachId,
+  transferHistory = false,
+  startBodyweightKg,
+  startTotalKg,
+  startDots,
+}) {
+  const existing = await supabase
+    .from('coaching_stints')
+    .select('id')
+    .eq('athlete_id', athleteId)
+    .eq('status', 'active')
+    .maybeSingle()
+  assertOk(existing.error, 'check active stint')
+  if (existing.data) {
+    throw new Error('Athlete already has an active coach. Disconnect first.')
+  }
+
+  const { data, error } = await supabase
+    .from('coaching_stints')
+    .insert({
+      athlete_id: athleteId,
+      coach_id: coachId,
+      status: 'active',
+      transfer_history: Boolean(transferHistory),
+      start_bodyweight_kg: startBodyweightKg ?? null,
+      start_total_kg: startTotalKg ?? null,
+      start_dots: startDots ?? null,
+    })
+    .select('*')
+  assertOk(error, 'start coaching stint')
+  assertWrote(data, 'start coaching stint')
+  await updateAthleteCoachId(athleteId, coachId)
+  return mapStintRow(data[0])
 }

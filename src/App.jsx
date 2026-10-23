@@ -12,13 +12,17 @@ import {
   WEEKDAYS,
   createAthleteProfile,
   createCoachProfile,
+  currentGl,
   e1FromSet,
   emptyPlan,
+  estimatedTotalKg,
   findLog,
   fmtKg,
+  messagesForPair,
   normalizeBlocks,
   pushE1rm,
   runwayWeeks,
+  scopeAthleteForCoach,
   sessionAt,
   setCaption,
   syncPlanLength,
@@ -28,6 +32,7 @@ import {
 } from './domain'
 import {
   deleteVideo,
+  endActiveStint,
   fetchWorkspace,
   formatSupabaseError,
   allocateUniqueUserCode,
@@ -37,7 +42,7 @@ import {
   markMessagesRead,
   persistAthleteStructure,
   persistPlan,
-  updateAthleteCoachId,
+  startCoachingStint,
   uploadMedia,
   upsertE1rmPoint,
   upsertScheduleOverride,
@@ -204,7 +209,17 @@ export default function App() {
     return () => { cancelled = true }
   }, [])
 
-  const athlete = athleteId ? athletes[athleteId] : null
+  const rawAthlete = athleteId ? athletes[athleteId] : null
+  const activeUnitCoachId = role === 'coach'
+    ? coach?.id
+    : (rawAthlete?.coachId || coach?.id || null)
+  const athlete = useMemo(() => {
+    if (!rawAthlete) return null
+    if (role === 'coach') {
+      return scopeAthleteForCoach(rawAthlete, coach?.id, rawAthlete.activeStint)
+    }
+    return rawAthlete
+  }, [rawAthlete, role, coach?.id, rawAthlete?.activeStint])
   const weeks = athlete ? runwayWeeks(athlete) : 0
   const blocks = useMemo(
     () => (athlete ? normalizeBlocks(athlete.blocks, weeks) : []),
@@ -215,6 +230,13 @@ export default function App() {
   const blockStart = selectedBlock
     ? blocks.slice(0, blocks.findIndex((b) => b.id === selectedBlock.id)).reduce((sum, b) => sum + b.weeks, 0)
     : 0
+  const pairMessages = useMemo(() => {
+    if (!athleteId || !activeUnitCoachId) return messages
+    return {
+      ...messages,
+      [athleteId]: messagesForPair(messages, athleteId, activeUnitCoachId),
+    }
+  }, [messages, athleteId, activeUnitCoachId])
 
   useEffect(() => {
     if (!toast) return undefined
@@ -224,8 +246,8 @@ export default function App() {
 
   const connected = Object.values(athletes).filter((a) => a.coachId === coach.id)
   const messageBadge = role === 'coach'
-    ? connected.reduce((sum, person) => sum + unreadCount(messages, person.id, 'coach'), 0)
-    : (athlete ? unreadCount(messages, athlete.id, 'athlete') : 0)
+    ? connected.reduce((sum, person) => sum + unreadCount(pairMessages, person.id, 'coach'), 0)
+    : (athlete ? unreadCount(pairMessages, athlete.id, 'athlete') : 0)
 
   function patchAthlete(mutator) {
     const id = athleteIdRef.current
@@ -237,7 +259,7 @@ export default function App() {
     setAthletes(result)
     schedulePersist(`athlete:${id}`, async () => {
       const latest = athletesRef.current[id]
-      if (latest) await persistAthleteStructure(latest)
+      if (latest) await persistAthleteStructure(latest, activeUnitCoachId || latest.coachId)
     })
   }
 
@@ -248,15 +270,16 @@ export default function App() {
     const blockWeeks = selectedBlock.weeks
     const current = athletesRef.current[id]
     if (!current) return
+    const cid = activeUnitCoachId || current.coachId
     const base = syncPlanLength(current.plans[blockId] || emptyPlan(blockWeeks), blockWeeks)
-    const nextPlan = mutator(base, current)
+    const nextPlan = { ...mutator(base, current), coachId: cid }
     const next = { ...current, plans: { ...current.plans, [blockId]: nextPlan } }
     const result = { ...athletesRef.current, [id]: next }
     athletesRef.current = result
     setAthletes(result)
     schedulePersist(`plan:${id}:${blockId}`, async () => {
-      const plan = athletesRef.current[id]?.plans?.[blockId]
-      if (plan) await persistPlan(id, blockId, plan)
+      const planRow = athletesRef.current[id]?.plans?.[blockId]
+      if (planRow) await persistPlan(id, blockId, planRow, cid)
     })
   }
 
@@ -327,7 +350,7 @@ export default function App() {
     writeSession(next)
   }
 
-  async function createProfile(name) {
+  async function createProfile({ name, sex, bodyweightKg }) {
     if (role === 'coach') {
       const code = await allocateUniqueUserCode('coach')
       const profile = createCoachProfile({ name, code })
@@ -340,9 +363,9 @@ export default function App() {
       return
     }
     const code = await allocateUniqueUserCode('athlete')
-    const profile = createAthleteProfile({ name, code })
+    const profile = createAthleteProfile({ name, code, sex, bodyweightKg })
     await insertAthleteWithStructure(profile)
-    const nextAthletes = { ...athletesRef.current, [profile.id]: profile }
+    const nextAthletes = { ...athletesRef.current, [profile.id]: { ...profile, stints: [], activeStint: null } }
     athletesRef.current = nextAthletes
     setAthletes(nextAthletes)
     setMessages((prev) => {
@@ -370,7 +393,36 @@ export default function App() {
     setScreen('connect')
   }
 
-  async function connectAthleteToCoach(athletePersonId, coachPersonId, { open = false } = {}) {
+  async function disconnectFromCoach(athletePersonId) {
+    const person = athletesRef.current[athletePersonId]
+    if (!person?.coachId) {
+      setToast('Not connected to a coach')
+      return
+    }
+    try {
+      const ended = await endActiveStint(athletePersonId, {
+        endTotalKg: estimatedTotalKg(person),
+        endDots: currentGl(person),
+      })
+      const next = {
+        ...person,
+        coachId: null,
+        activeStint: null,
+        stints: ended
+          ? [ended, ...(person.stints || []).filter((s) => s.id !== ended.id)]
+          : (person.stints || []).map((s) => (s.status === 'active' ? { ...s, status: 'ended' } : s)),
+      }
+      const nextAthletes = { ...athletesRef.current, [athletePersonId]: next }
+      athletesRef.current = nextAthletes
+      setAthletes(nextAthletes)
+      setToast(`Disconnected from coach`)
+    } catch (err) {
+      console.error('[supabase] disconnect failed', err)
+      setToast(err?.message || formatSupabaseError(err, 'disconnect'))
+    }
+  }
+
+  async function connectAthleteToCoach(athletePersonId, coachPersonId, { open = false, transferHistory = false } = {}) {
     const person = athletesRef.current[athletePersonId]
     const targetCoach = coaches.find((c) => c.id === coachPersonId) || coach
     if (!person || !targetCoach) return
@@ -379,9 +431,25 @@ export default function App() {
       if (open) openPerson({ ...person, coachId: targetCoach.id }, role === 'athlete' ? 'athlete' : 'coach')
       return
     }
+    if (person.coachId && person.coachId !== targetCoach.id) {
+      setToast('Disconnect from your current coach before connecting to another.')
+      return
+    }
     try {
-      await updateAthleteCoachId(athletePersonId, targetCoach.id)
-      const next = { ...person, coachId: targetCoach.id }
+      const stint = await startCoachingStint({
+        athleteId: athletePersonId,
+        coachId: targetCoach.id,
+        transferHistory,
+        startBodyweightKg: person.bodyweightKg,
+        startTotalKg: estimatedTotalKg(person),
+        startDots: currentGl(person),
+      })
+      const next = {
+        ...person,
+        coachId: targetCoach.id,
+        activeStint: stint,
+        stints: [stint, ...(person.stints || []).filter((s) => s.id !== stint.id)],
+      }
       const nextAthletes = { ...athletesRef.current, [athletePersonId]: next }
       athletesRef.current = nextAthletes
       setAthletes(nextAthletes)
@@ -399,7 +467,11 @@ export default function App() {
       openPerson(athletesRef.current[person.id], 'coach')
       return
     }
-    await connectAthleteToCoach(person.id, coach.id, { open: false })
+    if (person.coachId) {
+      setToast(`${person.name} is with another coach — they must disconnect first.`)
+      return
+    }
+    await connectAthleteToCoach(person.id, coach.id, { open: false, transferHistory: true })
   }
 
   async function copyCode(text) {
@@ -417,6 +489,11 @@ export default function App() {
     const id = athleteIdRef.current
     const current = athletesRef.current[id]
     if (!current) return
+    const cid = current.coachId || activeUnitCoachId
+    if (!cid) {
+      setToast('Connect to a coach before logging sets')
+      return
+    }
 
     const existing = findLog(current.logs, block.id, weekIndex, dayIndex, row.setKey)
     let videos = current.videos
@@ -426,8 +503,8 @@ export default function App() {
     try {
       if (media) {
         videoId = videoId || uid()
-        uploadedUrl = await uploadMedia(current.id, videoId, media)
-        const video = {
+        // Show the clip immediately (blob), then swap to the durable Storage URL.
+        const pendingVideo = {
           id: videoId,
           logId: existing?.id || null,
           date,
@@ -442,12 +519,24 @@ export default function App() {
           reps,
           weight,
           rpe,
-          url: uploadedUrl,
-          type: media.type,
+          url: media.url,
+          type: media.type || 'video/mp4',
           name: media.name,
           caption,
+          coachId: cid,
         }
-        videos = [video, ...videos.filter((v) => v.id !== videoId)]
+        videos = [pendingVideo, ...videos.filter((v) => v.id !== videoId)]
+        {
+          const nextAthletes = { ...athletesRef.current, [id]: { ...current, videos } }
+          athletesRef.current = nextAthletes
+          setAthletes(nextAthletes)
+        }
+        setSaveState('saving')
+        uploadedUrl = await uploadMedia(current.id, videoId, media)
+        if (media.url?.startsWith('blob:')) {
+          try { URL.revokeObjectURL(media.url) } catch { /* ignore */ }
+        }
+        videos = videos.map((v) => (v.id === videoId ? { ...v, url: uploadedUrl } : v))
       } else if (videoId) {
         videos = videos.map((v) => (v.id === videoId ? {
           ...v,
@@ -460,6 +549,7 @@ export default function App() {
           exercise: row.exercise,
           label: row.label,
           lift: row.lift,
+          coachId: cid,
         } : v))
       }
 
@@ -479,14 +569,17 @@ export default function App() {
         e1,
         date,
         videoId,
+        coachId: cid,
       }
-      if (videoId) videos = videos.map((v) => (v.id === videoId ? { ...v, logId: log.id } : v))
+      if (videoId) videos = videos.map((v) => (v.id === videoId ? { ...v, logId: log.id, coachId: cid } : v))
 
       let e1rmSeries = current.e1rmSeries
       let e1rm = current.e1rm
       let seriesPoint = null
       if (row.lift && e1) {
-        e1rmSeries = pushE1rm(current.e1rmSeries, row.lift, e1, date)
+        e1rmSeries = pushE1rm(current.e1rmSeries, row.lift, e1, date).map((p) => (
+          p.date === date ? { ...p, coachId: cid } : p
+        ))
         seriesPoint = e1rmSeries.find((p) => p.date === date) || e1rmSeries[e1rmSeries.length - 1]
         e1rm = { ...current.e1rm, [row.lift]: seriesPoint[row.lift] }
       }
@@ -501,6 +594,7 @@ export default function App() {
           prescribedWeekday: WEEKDAYS[dayIndex],
           actualWeekday: WEEKDAYS[(new Date().getDay() + 6) % 7],
           date: todayISO(),
+          coachId: cid,
         }
         scheduleOverrides = [
           ...current.scheduleOverrides.filter((o) => !(o.blockId === block.id && o.weekIndex === weekIndex && o.dayIndex === dayIndex)),
@@ -520,25 +614,33 @@ export default function App() {
       athletesRef.current = nextAthletes
       setAthletes(nextAthletes)
 
-      if (media && videoId) {
+      // Only persist durable (non-blob) URLs so Videos tab survives refresh.
+      if (media && videoId && uploadedUrl) {
         const videoRow = videos.find((v) => v.id === videoId)
-        await upsertVideo(current.id, { ...videoRow, url: uploadedUrl, logId: null })
+        await upsertVideo(current.id, { ...videoRow, url: uploadedUrl, logId: null }, cid)
       } else if (videoId && !media) {
         const videoRow = videos.find((v) => v.id === videoId)
-        if (videoRow) await upsertVideo(current.id, videoRow)
+        if (videoRow && videoRow.url && !String(videoRow.url).startsWith('blob:')) {
+          await upsertVideo(current.id, videoRow, cid)
+        }
       }
-      await upsertSetLog(current.id, log)
-      if (videoId) {
+      await upsertSetLog(current.id, log, cid)
+      if (videoId && uploadedUrl) {
         const videoRow = videos.find((v) => v.id === videoId)
-        if (videoRow) await upsertVideo(current.id, { ...videoRow, logId: log.id })
+        if (videoRow) await upsertVideo(current.id, { ...videoRow, url: uploadedUrl, logId: log.id }, cid)
+      } else if (videoId && !media) {
+        const videoRow = videos.find((v) => v.id === videoId)
+        if (videoRow && videoRow.url && !String(videoRow.url).startsWith('blob:')) {
+          await upsertVideo(current.id, { ...videoRow, logId: log.id }, cid)
+        }
       }
       if (seriesPoint) {
-        await upsertE1rmPoint(current.id, seriesPoint)
-        await persistAthleteStructure({ ...nextAthlete, e1rm })
+        await upsertE1rmPoint(current.id, { ...seriesPoint, coachId: cid }, cid)
+        await persistAthleteStructure({ ...nextAthlete, e1rm }, cid)
       }
-      if (newOverride) await upsertScheduleOverride(current.id, newOverride)
+      if (newOverride) await upsertScheduleOverride(current.id, newOverride, cid)
       const estimate = e1 ? ` · e1RM ${fmtKg(e1)}` : ''
-      setToast(media ? `Clip uploaded · ${caption}${estimate}` : `Logged · ${caption}${estimate}`)
+      setToast(media ? `Clip saved · ${caption}${estimate}` : `Logged · ${caption}${estimate}`)
       setSaveState('saved')
     } catch (err) {
       console.error('[supabase] logSet failed', err)
@@ -581,12 +683,18 @@ export default function App() {
         [id]: thread.map((m) => (m.unread && m.from !== role ? { ...m, unread: false } : m)),
       }
     })
-    markMessagesRead(id, role).catch((err) => {
+    const cid = athletesRef.current[id]?.coachId || coach?.id
+    markMessagesRead(id, role, cid).catch((err) => {
       console.error('[supabase] markRead failed', err)
     })
-  }, [role])
+  }, [role, coach?.id])
 
   async function sendMessage(id, from, text, attachment) {
+    const cid = athletesRef.current[id]?.coachId || coach?.id
+    if (!cid) {
+      setToast('Connect coach ↔ athlete before messaging')
+      return
+    }
     let storedAttachment = null
     const msgId = uid()
     if (attachment) {
@@ -612,13 +720,14 @@ export default function App() {
       at: new Date().toISOString(),
       attachment: storedAttachment,
       unread: true,
+      coachId: cid,
     }
     const nextThread = [...(messagesRef.current[id] || []), msg]
     const nextMessages = { ...messagesRef.current, [id]: nextThread }
     messagesRef.current = nextMessages
     setMessages(nextMessages)
     try {
-      await insertMessage(id, msg)
+      await insertMessage(id, msg, cid)
       setSaveState('saved')
     } catch (err) {
       console.error('[supabase] sendMessage failed', err)
@@ -706,9 +815,9 @@ export default function App() {
           coaches={coaches}
           athletes={athletes}
           onBack={() => { setScreen('role'); setRole(null) }}
-          onCreate={async (name) => {
+          onCreate={async (details) => {
             try {
-              await createProfile(name)
+              await createProfile(details)
             } catch (err) {
               console.error('[supabase] create profile failed', err)
               setToast(err?.message || formatSupabaseError(err, 'create profile'))
@@ -721,7 +830,7 @@ export default function App() {
     )
   }
 
-  if (screen === 'connect' || (role === 'athlete' && !athlete) || (role === 'coach' && !coach)) {
+  if (screen === 'connect' || (role === 'athlete' && !rawAthlete) || (role === 'coach' && !coach)) {
     return (
       <>
         <ConnectGate
@@ -729,9 +838,10 @@ export default function App() {
           coach={coach}
           coaches={coaches}
           athletes={athletes}
-          selfAthlete={role === 'athlete' ? athlete : null}
+          selfAthlete={role === 'athlete' ? rawAthlete : null}
           onOpen={(id) => openPerson(athletes[id], role)}
-          onConnectCoach={(coachId) => connectAthleteToCoach(athleteId, coachId, { open: true })}
+          onConnectCoach={(coachId, { transferHistory }) => connectAthleteToCoach(athleteId, coachId, { open: true, transferHistory })}
+          onDisconnect={() => disconnectFromCoach(athleteId)}
           onSearchConnect={onCoachSearchConnect}
           onBack={() => { setScreen('profile') }}
           onCopy={copyCode}
@@ -856,7 +966,15 @@ export default function App() {
             onStartDate={setStartDate}
           />
         )}
-        {page === 'progress' && <ProgressPage athlete={athlete} viewer={role} />}
+        {page === 'progress' && (
+          <ProgressPage
+            athlete={athlete}
+            viewer={role}
+            stint={rawAthlete?.activeStint}
+            roster={role === 'coach' ? connected : null}
+            onBodyweight={(kg) => patchAthlete((c) => ({ ...c, bodyweightKg: Number(kg) }))}
+          />
+        )}
         {page === 'messages' && (
           <MessagesPage
             key={athlete.id}
@@ -864,7 +982,7 @@ export default function App() {
             coach={coach}
             athlete={athlete}
             athletes={athletes}
-            messages={messages}
+            messages={pairMessages}
             onSend={sendMessage}
             onOpenThread={(id) => { setAthleteId(id); setSelectedBlockId(null); setSelectedWeek(0); setSelectedDay(0); setStage('macro') }}
             onMarkRead={markRead}

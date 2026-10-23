@@ -2,7 +2,7 @@
  * One-off seed: uploads createWorkspace() mock data into Supabase.
  *
  * Usage:
- *   1. Run supabase/schema.sql in the Supabase SQL editor
+ *   1. Run supabase/schema.sql then supabase/migration_coaching_units.sql
  *   2. Copy .env.example → .env and fill URL + keys
  *   3. npm run seed:supabase
  *
@@ -46,9 +46,13 @@ if (!url || !serviceKey) {
   process.exit(1)
 }
 
-const { createWorkspace, makeAthleteCode, makeCoachCode } = await import(
-  pathToFileURL(resolve(root, 'src/domain.js')).href
-)
+const {
+  createWorkspace,
+  makeAthleteCode,
+  makeCoachCode,
+  calculateDots,
+  estimatedTotalKg,
+} = await import(pathToFileURL(resolve(root, 'src/domain.js')).href)
 
 const supabase = createClient(url, serviceKey, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -79,6 +83,11 @@ async function allocateUniqueCode(kind, taken) {
 let workspace
 let coach
 let athletes
+let schema = {
+  athleteGl: false,
+  coachIdOnUnits: false,
+  coachingStints: false,
+}
 
 function assertOk(label, error) {
   if (error) {
@@ -88,13 +97,41 @@ function assertOk(label, error) {
   console.log(`✓ ${label}`)
 }
 
-async function deleteAll(table, column = 'id') {
+function isMissingSchemaError(error) {
+  const msg = error?.message || ''
+  return /Could not find the|does not exist|schema cache|PGRST204/i.test(msg)
+    || error?.code === 'PGRST204'
+    || error?.code === '42P01'
+}
+
+async function detectSchema() {
+  {
+    const { error } = await supabase.from('athletes').select('id, sex, bodyweight_kg').limit(1)
+    schema.athleteGl = !error
+    if (error) console.warn('~ athletes.sex/bodyweight_kg missing — run migration_coaching_units.sql')
+  }
+  {
+    const { error } = await supabase.from('blocks').select('athlete_id, coach_id').limit(1)
+    schema.coachIdOnUnits = !error
+    if (error) console.warn('~ blocks.coach_id missing — run migration_coaching_units.sql')
+  }
+  {
+    const { error } = await supabase.from('coaching_stints').select('id').limit(1)
+    schema.coachingStints = !error
+    if (error) console.warn('~ coaching_stints missing — run migration_coaching_units.sql')
+  }
+}
+
+async function deleteAll(table, column = 'id', { optional = false } = {}) {
   const { error } = await supabase.from(table).delete().neq(column, '__never__')
+  if (error && (optional || isMissingSchemaError(error))) {
+    console.warn(`~ wipe ${table} skipped (${error.message})`)
+    return
+  }
   assertOk(`wipe ${table}`, error)
 }
 
 async function wipe() {
-  // Break circular video ↔ log FKs, then delete dependents → parents.
   {
     const { error } = await supabase.from('set_logs').update({ video_id: null }).neq('id', '__never__')
     assertOk('clear set_logs.video_id', error)
@@ -105,6 +142,14 @@ async function wipe() {
   }
 
   await deleteAll('messages')
+  {
+    const { error } = await supabase.from('coaching_stints').delete().gte('started_at', '1970-01-01')
+    if (error && isMissingSchemaError(error)) {
+      console.warn(`~ wipe coaching_stints skipped (${error.message})`)
+    } else {
+      assertOk('wipe coaching_stints', error)
+    }
+  }
   await deleteAll('e1rm_series', 'athlete_id')
   await deleteAll('schedule_overrides', 'athlete_id')
   await deleteAll('set_logs')
@@ -113,6 +158,10 @@ async function wipe() {
   await deleteAll('blocks', 'block_key')
   await deleteAll('athletes')
   await deleteAll('coaches')
+}
+
+function unitCoachId(athlete, row) {
+  return row?.coachId || athlete.coachId || null
 }
 
 async function seed() {
@@ -134,21 +183,28 @@ async function seed() {
     assertOk(`coaches (${coach.code})`, error)
   }
 
-  const athleteRows = athletes.map((a) => ({
-    id: a.id,
-    name: a.name,
-    code: a.code,
-    coach_id: a.coachId || null,
-    event: a.event,
-    meet_date: a.meetDate,
-    planning_mode: a.planningMode,
-    block_weeks: a.blockWeeks,
-    start_date: a.startDate,
-    pbs: a.pbs,
-    e1rm: a.e1rm,
-    accessory_library: a.accessoryLibrary,
-    lift_library: a.liftLibrary,
-  }))
+  const athleteRows = athletes.map((a) => {
+    const row = {
+      id: a.id,
+      name: a.name,
+      code: a.code,
+      coach_id: a.coachId || null,
+      event: a.event,
+      meet_date: a.meetDate,
+      planning_mode: a.planningMode,
+      block_weeks: a.blockWeeks,
+      start_date: a.startDate,
+      pbs: a.pbs,
+      e1rm: a.e1rm,
+      accessory_library: a.accessoryLibrary,
+      lift_library: a.liftLibrary,
+    }
+    if (schema.athleteGl) {
+      row.sex = a.sex === 'female' ? 'female' : 'male'
+      row.bodyweight_kg = a.bodyweightKg ?? null
+    }
+    return row
+  })
   {
     const { error } = await supabase.from('athletes').upsert(athleteRows)
     assertOk(`athletes (${athleteRows.length})`, error)
@@ -157,23 +213,31 @@ async function seed() {
   const blockRows = []
   const planRows = []
   for (const a of athletes) {
+    // Without coach_id columns, still seed programmes for every athlete.
+    if (schema.coachIdOnUnits && !a.coachId) continue
     a.blocks.forEach((b, position) => {
-      blockRows.push({
+      const cid = unitCoachId(a, b)
+      if (schema.coachIdOnUnits && !cid) return
+      const block = {
         athlete_id: a.id,
         block_key: b.id,
         name: b.name,
         weeks: b.weeks,
         position,
-      })
+      }
+      if (schema.coachIdOnUnits) block.coach_id = cid
+      blockRows.push(block)
       const plan = a.plans?.[b.id]
       if (plan) {
-        planRows.push({
+        const planRow = {
           athlete_id: a.id,
           block_key: b.id,
           same_every_week: plan.sameEveryWeek,
           frequency: plan.frequency,
           weeks: plan.weeks,
-        })
+        }
+        if (schema.coachIdOnUnits) planRow.coach_id = cid
+        planRows.push(planRow)
       }
     })
   }
@@ -188,11 +252,12 @@ async function seed() {
     console.log('✓ plans (0)')
   }
 
-  // Insert videos without log_id first (logs may reference video_id).
   const videoRows = []
   for (const a of athletes) {
     for (const v of a.videos || []) {
-      videoRows.push({
+      const cid = unitCoachId(a, v)
+      if (schema.coachIdOnUnits && !cid) continue
+      const row = {
         id: v.id,
         athlete_id: a.id,
         log_id: null,
@@ -212,7 +277,9 @@ async function seed() {
         type: v.type || '',
         name: v.name || '',
         caption: v.caption || '',
-      })
+      }
+      if (schema.coachIdOnUnits) row.coach_id = cid
+      videoRows.push(row)
     }
   }
   if (videoRows.length) {
@@ -225,7 +292,9 @@ async function seed() {
   const logRows = []
   for (const a of athletes) {
     for (const log of a.logs || []) {
-      logRows.push({
+      const cid = unitCoachId(a, log)
+      if (schema.coachIdOnUnits && !cid) continue
+      const row = {
         id: log.id,
         athlete_id: a.id,
         set_key: log.setKey,
@@ -242,7 +311,9 @@ async function seed() {
         e1: log.e1,
         date: log.date,
         video_id: log.videoId,
-      })
+      }
+      if (schema.coachIdOnUnits) row.coach_id = cid
+      logRows.push(row)
     }
   }
   if (logRows.length) {
@@ -255,6 +326,7 @@ async function seed() {
   for (const a of athletes) {
     for (const v of a.videos || []) {
       if (!v.logId) continue
+      if (schema.coachIdOnUnits && !unitCoachId(a, v)) continue
       const { error } = await supabase.from('videos').update({ log_id: v.logId }).eq('id', v.id)
       assertOk(`link video ${v.id} → log`, error)
     }
@@ -263,17 +335,22 @@ async function seed() {
   const seriesRows = []
   for (const a of athletes) {
     for (const point of a.e1rmSeries || []) {
-      seriesRows.push({
+      const cid = unitCoachId(a, point)
+      if (schema.coachIdOnUnits && !cid) continue
+      const row = {
         athlete_id: a.id,
         date: point.date,
         squat: point.squat,
         bench: point.bench,
         deadlift: point.deadlift,
-      })
+      }
+      if (schema.coachIdOnUnits) row.coach_id = cid
+      seriesRows.push(row)
     }
   }
   if (seriesRows.length) {
-    const { error } = await supabase.from('e1rm_series').upsert(seriesRows)
+    const conflict = schema.coachIdOnUnits ? 'athlete_id,coach_id,date' : 'athlete_id,date'
+    const { error } = await supabase.from('e1rm_series').upsert(seriesRows, { onConflict: conflict })
     assertOk(`e1rm_series (${seriesRows.length})`, error)
   } else {
     console.log('✓ e1rm_series (0)')
@@ -282,7 +359,9 @@ async function seed() {
   const overrideRows = []
   for (const a of athletes) {
     for (const o of a.scheduleOverrides || []) {
-      overrideRows.push({
+      const cid = unitCoachId(a, o)
+      if (schema.coachIdOnUnits && !cid) continue
+      const row = {
         athlete_id: a.id,
         block_key: o.blockId,
         week_index: o.weekIndex,
@@ -290,7 +369,9 @@ async function seed() {
         prescribed_weekday: o.prescribedWeekday,
         actual_weekday: o.actualWeekday,
         date: o.date,
-      })
+      }
+      if (schema.coachIdOnUnits) row.coach_id = cid
+      overrideRows.push(row)
     }
   }
   if (overrideRows.length) {
@@ -302,8 +383,11 @@ async function seed() {
 
   const messageRows = []
   for (const [athleteId, thread] of Object.entries(workspace.messages || {})) {
+    const athlete = workspace.athletes[athleteId]
     for (const m of thread) {
-      messageRows.push({
+      const cid = m.coachId || athlete?.coachId
+      if (schema.coachIdOnUnits && !cid) continue
+      const row = {
         id: m.id,
         athlete_id: athleteId,
         from_role: m.from,
@@ -311,7 +395,9 @@ async function seed() {
         at: m.at,
         attachment: m.attachment,
         unread: Boolean(m.unread),
-      })
+      }
+      if (schema.coachIdOnUnits) row.coach_id = cid
+      messageRows.push(row)
     }
   }
   if (messageRows.length) {
@@ -321,15 +407,56 @@ async function seed() {
     console.log('✓ messages (0)')
   }
 
+  if (schema.coachingStints) {
+    const stintRows = []
+    for (const a of athletes) {
+      if (!a.coachId) continue
+      const totalNow = estimatedTotalKg(a)
+      const startTotal = Math.max(0, Math.round((totalNow || 0) * 0.94))
+      const startBw = a.bodyweightKg
+      const startDots = calculateDots(startTotal, startBw, a.sex)
+      const started = new Date()
+      started.setDate(started.getDate() - 42)
+      stintRows.push({
+        athlete_id: a.id,
+        coach_id: a.coachId,
+        status: 'active',
+        started_at: started.toISOString(),
+        start_bodyweight_kg: startBw,
+        start_total_kg: startTotal,
+        start_dots: startDots,
+        transfer_history: true,
+      })
+    }
+    if (stintRows.length) {
+      const { error } = await supabase.from('coaching_stints').insert(stintRows)
+      assertOk(`coaching_stints (${stintRows.length})`, error)
+    } else {
+      console.log('✓ coaching_stints (0)')
+    }
+  } else {
+    console.log('~ coaching_stints skipped (table missing)')
+  }
+
   console.log('\nSeeded profiles (codes are random + unique — find people by name or paste the code):')
   console.log(`  - coach ${coach.name} (${coach.id}) code=${coach.code}`)
   for (const a of athletes) {
-    console.log(`  - ${a.name} (${a.id}) code=${a.code} coach=${a.coachId || 'none'} blocks=${a.blocks.length} logs=${a.logs.length} videos=${a.videos.length}`)
+    const total = estimatedTotalKg(a)
+    const gl = calculateDots(total, a.bodyweightKg, a.sex)
+    console.log(
+      `  - ${a.name} (${a.id}) code=${a.code} coach=${a.coachId || 'none'}`
+      + ` sex=${a.sex} bw=${a.bodyweightKg} total≈${total} GL≈${gl}`
+      + ` blocks=${a.blocks.length} logs=${a.logs.length} videos=${a.videos.length}`,
+    )
+  }
+  if (!schema.athleteGl || !schema.coachIdOnUnits || !schema.coachingStints) {
+    console.log('\n⚠ Schema incomplete. Paste supabase/migration_coaching_units.sql in the Supabase SQL editor, then re-run npm run seed:supabase.')
   }
 }
 
 console.log('Seeding Supabase from createWorkspace() …')
 console.log(`URL: ${url}`)
+await detectSchema()
 await wipe()
 await seed()
 console.log('\nDone. Open the app and search the directory by name, or use the codes printed above.')

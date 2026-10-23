@@ -22,6 +22,8 @@ create table if not exists public.athletes (
   name text not null,
   code text not null unique,
   coach_id text references public.coaches (id) on delete set null,
+  sex text not null default 'male' check (sex in ('male', 'female')),
+  bodyweight_kg numeric,
   event text not null default '',
   meet_date date,
   planning_mode text not null default 'meet' check (planning_mode in ('meet', 'block')),

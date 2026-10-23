@@ -25,5 +25,6 @@ grant all on table
   public.set_logs,
   public.videos,
   public.e1rm_series,
-  public.messages
+  public.messages,
+  public.coaching_stints
 to anon, authenticated, service_role;
