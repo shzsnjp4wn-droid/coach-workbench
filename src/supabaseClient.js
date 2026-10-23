@@ -105,11 +105,35 @@ function mapMessageRow(row) {
   }
 }
 
-function assertOk(error) {
-  if (error) throw error
+export function formatSupabaseError(error, label = 'Supabase') {
+  if (!error) return `${label} failed`
+  const parts = [
+    error.message,
+    error.code ? `code=${error.code}` : null,
+    error.details ? `details=${error.details}` : null,
+    error.hint ? `hint=${error.hint}` : null,
+  ].filter(Boolean)
+  return `${label}: ${parts.join(' · ')}`
 }
 
-/** Load the full app workspace from Supabase (no mock data). */
+function assertOk(error, label) {
+  if (error) {
+    const err = new Error(formatSupabaseError(error, label))
+    err.cause = error
+    throw err
+  }
+}
+
+function assertWrote(data, label) {
+  if (data == null || (Array.isArray(data) && data.length === 0)) {
+    throw new Error(
+      `${label}: write returned no rows. Likely RLS/grants blocking anon writes — re-run supabase/grants.sql.`,
+    )
+  }
+  return data
+}
+
+/** Load the full app workspace from Supabase (no domain.js mock merge). */
 export async function fetchWorkspace() {
   const [
     coachesRes,
@@ -133,8 +157,18 @@ export async function fetchWorkspace() {
     supabase.from('messages').select('*').order('at', { ascending: true }),
   ])
 
-  for (const res of [coachesRes, athletesRes, blocksRes, plansRes, logsRes, videosRes, seriesRes, overridesRes, messagesRes]) {
-    assertOk(res.error)
+  for (const [label, res] of [
+    ['coaches', coachesRes],
+    ['athletes', athletesRes],
+    ['blocks', blocksRes],
+    ['plans', plansRes],
+    ['set_logs', logsRes],
+    ['videos', videosRes],
+    ['e1rm_series', seriesRes],
+    ['schedule_overrides', overridesRes],
+    ['messages', messagesRes],
+  ]) {
+    assertOk(res.error, `load ${label}`)
   }
 
   const coaches = (coachesRes.data || []).map(mapCoachRow)
@@ -157,9 +191,9 @@ export async function fetchWorkspace() {
     const athletePlans = {}
     for (const p of plans.filter((row) => row.athlete_id === profile.id)) {
       athletePlans[p.block_key] = {
-        sameEveryWeek: p.same_every_week,
+        sameEveryWeek: Boolean(p.same_every_week),
         frequency: p.frequency || { squat: 2, bench: 2, deadlift: 1 },
-        weeks: p.weeks || [],
+        weeks: Array.isArray(p.weeks) ? p.weeks : [],
       }
     }
 
@@ -200,28 +234,32 @@ export async function updateAthleteCoachId(athleteId, coachId) {
     .eq('id', athleteId)
     .select('id, coach_id')
     .single()
-  assertOk(error)
-  return data
+  assertOk(error, 'update athlete coach_id')
+  return assertWrote(data, 'update athlete coach_id')
 }
 
 export async function upsertAthleteProfile(athlete) {
-  const { error } = await supabase.from('athletes').upsert({
-    id: athlete.id,
-    name: athlete.name,
-    code: athlete.code,
-    coach_id: athlete.coachId,
-    event: athlete.event,
-    meet_date: athlete.meetDate,
-    planning_mode: athlete.planningMode,
-    block_weeks: athlete.blockWeeks,
-    start_date: athlete.startDate,
-    pbs: athlete.pbs,
-    e1rm: athlete.e1rm,
-    accessory_library: athlete.accessoryLibrary,
-    lift_library: athlete.liftLibrary,
-    updated_at: new Date().toISOString(),
-  })
-  assertOk(error)
+  const { data, error } = await supabase
+    .from('athletes')
+    .upsert({
+      id: athlete.id,
+      name: athlete.name,
+      code: athlete.code,
+      coach_id: athlete.coachId,
+      event: athlete.event,
+      meet_date: athlete.meetDate,
+      planning_mode: athlete.planningMode,
+      block_weeks: athlete.blockWeeks,
+      start_date: athlete.startDate,
+      pbs: athlete.pbs,
+      e1rm: athlete.e1rm,
+      accessory_library: athlete.accessoryLibrary,
+      lift_library: athlete.liftLibrary,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'id' })
+    .select('id')
+  assertOk(error, 'upsert athlete')
+  assertWrote(data, 'upsert athlete')
 }
 
 export async function syncBlocks(athleteId, blocks) {
@@ -229,7 +267,7 @@ export async function syncBlocks(athleteId, blocks) {
     .from('blocks')
     .select('block_key')
     .eq('athlete_id', athleteId)
-  assertOk(readError)
+  assertOk(readError, 'read blocks')
 
   const nextKeys = new Set(blocks.map((b) => b.id))
   const toDelete = (existing || []).map((r) => r.block_key).filter((key) => !nextKeys.has(key))
@@ -239,7 +277,7 @@ export async function syncBlocks(athleteId, blocks) {
       .delete()
       .eq('athlete_id', athleteId)
       .in('block_key', toDelete)
-    assertOk(error)
+    assertOk(error, 'delete blocks')
   }
 
   if (!blocks.length) return
@@ -250,104 +288,132 @@ export async function syncBlocks(athleteId, blocks) {
     weeks: b.weeks,
     position,
   }))
-  const { error } = await supabase.from('blocks').upsert(rows)
-  assertOk(error)
+  const { data, error } = await supabase
+    .from('blocks')
+    .upsert(rows, { onConflict: 'athlete_id,block_key' })
+    .select('block_key')
+  assertOk(error, 'upsert blocks')
+  assertWrote(data, 'upsert blocks')
 }
 
 export async function upsertPlan(athleteId, blockKey, plan) {
-  const { error } = await supabase.from('plans').upsert({
-    athlete_id: athleteId,
-    block_key: blockKey,
-    same_every_week: plan.sameEveryWeek,
-    frequency: plan.frequency,
-    weeks: plan.weeks,
-    updated_at: new Date().toISOString(),
-  })
-  assertOk(error)
+  const { data, error } = await supabase
+    .from('plans')
+    .upsert({
+      athlete_id: athleteId,
+      block_key: blockKey,
+      same_every_week: plan.sameEveryWeek,
+      frequency: plan.frequency,
+      weeks: plan.weeks,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'athlete_id,block_key' })
+    .select('block_key')
+  assertOk(error, 'upsert plan')
+  assertWrote(data, 'upsert plan')
 }
 
 export async function upsertSetLog(athleteId, log) {
-  const { error } = await supabase.from('set_logs').upsert({
-    id: log.id,
-    athlete_id: athleteId,
-    set_key: log.setKey,
-    block_key: log.blockId,
-    week_index: log.weekIndex,
-    day_index: log.dayIndex,
-    set_number: log.setNumber,
-    exercise: log.exercise,
-    label: log.label,
-    lift: log.lift,
-    weight: log.weight,
-    reps: log.reps,
-    rpe: log.rpe,
-    e1: log.e1,
-    date: log.date,
-    video_id: log.videoId,
-  })
-  assertOk(error)
+  const { data, error } = await supabase
+    .from('set_logs')
+    .upsert({
+      id: log.id,
+      athlete_id: athleteId,
+      set_key: log.setKey,
+      block_key: log.blockId,
+      week_index: log.weekIndex,
+      day_index: log.dayIndex,
+      set_number: log.setNumber,
+      exercise: log.exercise,
+      label: log.label,
+      lift: log.lift,
+      weight: log.weight,
+      reps: log.reps,
+      rpe: log.rpe,
+      e1: log.e1,
+      date: log.date,
+      video_id: log.videoId,
+    }, { onConflict: 'id' })
+    .select('id')
+  assertOk(error, 'upsert set_log')
+  assertWrote(data, 'upsert set_log')
 }
 
 export async function upsertVideo(athleteId, video) {
-  const { error } = await supabase.from('videos').upsert({
-    id: video.id,
-    athlete_id: athleteId,
-    log_id: video.logId,
-    date: video.date,
-    block_key: video.blockId,
-    block_name: video.blockName,
-    week_index: video.weekIndex,
-    day_index: video.dayIndex,
-    set_number: video.setNumber,
-    exercise: video.exercise,
-    label: video.label,
-    lift: video.lift,
-    reps: video.reps,
-    weight: video.weight,
-    rpe: video.rpe,
-    url: video.url,
-    type: video.type || '',
-    name: video.name || '',
-    caption: video.caption || '',
-  })
-  assertOk(error)
+  const { data, error } = await supabase
+    .from('videos')
+    .upsert({
+      id: video.id,
+      athlete_id: athleteId,
+      log_id: video.logId,
+      date: video.date,
+      block_key: video.blockId,
+      block_name: video.blockName,
+      week_index: video.weekIndex,
+      day_index: video.dayIndex,
+      set_number: video.setNumber,
+      exercise: video.exercise,
+      label: video.label,
+      lift: video.lift,
+      reps: video.reps,
+      weight: video.weight,
+      rpe: video.rpe,
+      url: video.url,
+      type: video.type || '',
+      name: video.name || '',
+      caption: video.caption || '',
+    }, { onConflict: 'id' })
+    .select('id')
+  assertOk(error, 'upsert video')
+  assertWrote(data, 'upsert video')
 }
 
 export async function upsertE1rmPoint(athleteId, point) {
-  const { error } = await supabase.from('e1rm_series').upsert({
-    athlete_id: athleteId,
-    date: point.date,
-    squat: point.squat,
-    bench: point.bench,
-    deadlift: point.deadlift,
-  })
-  assertOk(error)
+  const { data, error } = await supabase
+    .from('e1rm_series')
+    .upsert({
+      athlete_id: athleteId,
+      date: point.date,
+      squat: point.squat,
+      bench: point.bench,
+      deadlift: point.deadlift,
+    }, { onConflict: 'athlete_id,date' })
+    .select('date')
+  assertOk(error, 'upsert e1rm_series')
+  assertWrote(data, 'upsert e1rm_series')
 }
 
 export async function upsertScheduleOverride(athleteId, override) {
-  const { error } = await supabase.from('schedule_overrides').upsert({
-    athlete_id: athleteId,
-    block_key: override.blockId,
-    week_index: override.weekIndex,
-    day_index: override.dayIndex,
-    prescribed_weekday: override.prescribedWeekday,
-    actual_weekday: override.actualWeekday,
-    date: override.date,
-  }, { onConflict: 'athlete_id,block_key,week_index,day_index' })
-  assertOk(error)
+  const { data, error } = await supabase
+    .from('schedule_overrides')
+    .upsert({
+      athlete_id: athleteId,
+      block_key: override.blockId,
+      week_index: override.weekIndex,
+      day_index: override.dayIndex,
+      prescribed_weekday: override.prescribedWeekday,
+      actual_weekday: override.actualWeekday,
+      date: override.date,
+    }, { onConflict: 'athlete_id,block_key,week_index,day_index' })
+    .select('block_key')
+  assertOk(error, 'upsert schedule_override')
+  assertWrote(data, 'upsert schedule_override')
 }
 
 export async function insertMessage(athleteId, message) {
-  const { error } = await supabase.from('messages').insert({
-    id: message.id,
-    athlete_id: athleteId,
-    from_role: message.from,
-    text: message.text || '',
-    at: message.at,
-    attachment: message.attachment,
-    unread: Boolean(message.unread),
-  })
-  assertOk(error)
+  const { data, error } = await supabase
+    .from('messages')
+    .insert({
+      id: message.id,
+      athlete_id: athleteId,
+      from_role: message.from,
+      text: message.text || '',
+      at: message.at,
+      attachment: message.attachment,
+      unread: Boolean(message.unread),
+    })
+    .select('id')
+  assertOk(error, 'insert message')
+  assertWrote(data, 'insert message')
 }
 
 export async function markMessagesRead(athleteId, readerRole) {
@@ -357,13 +423,10 @@ export async function markMessagesRead(athleteId, readerRole) {
     .eq('athlete_id', athleteId)
     .eq('unread', true)
     .neq('from_role', readerRole)
-  assertOk(error)
+    .select('id')
+  assertOk(error, 'mark messages read')
 }
 
-/**
- * Upload a browser media object (from fileToMedia) to Storage.
- * Returns a public URL, or null if storage isn't configured yet.
- */
 export async function uploadMedia(athleteId, objectId, media) {
   if (!media?.url) return null
   try {
@@ -387,13 +450,11 @@ export async function uploadMedia(athleteId, objectId, media) {
   }
 }
 
-/** Persist profile fields + block list for an athlete. */
 export async function persistAthleteStructure(athlete) {
   await upsertAthleteProfile(athlete)
   await syncBlocks(athlete.id, athlete.blocks || [])
 }
 
-/** Persist one plan document. */
 export async function persistPlan(athleteId, blockKey, plan) {
   await upsertPlan(athleteId, blockKey, plan)
 }

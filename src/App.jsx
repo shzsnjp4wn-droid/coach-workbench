@@ -26,6 +26,7 @@ import {
 } from './domain'
 import {
   fetchWorkspace,
+  formatSupabaseError,
   insertMessage,
   markMessagesRead,
   persistAthleteStructure,
@@ -37,6 +38,8 @@ import {
   upsertSetLog,
   upsertVideo,
 } from './supabaseClient'
+
+const PERSIST_DEBOUNCE_MS = 50
 
 export default function App() {
   const [boot, setBoot] = useState({ status: 'loading', error: null })
@@ -52,20 +55,70 @@ export default function App() {
   const [selectedDay, setSelectedDay] = useState(0)
   const [stage, setStage] = useState('macro')
   const [toast, setToast] = useState('')
+  const [saveState, setSaveState] = useState('idle')
   const persistTimers = useRef({})
+  const persistFns = useRef({})
+  const toastRef = useRef(setToast)
+  toastRef.current = setToast
 
-  function schedulePersist(key, fn) {
-    clearTimeout(persistTimers.current[key])
-    persistTimers.current[key] = setTimeout(() => {
-      fn().catch((err) => {
-        console.error(`[supabase] persist ${key} failed`, err)
-        setToast(err?.message || `Could not save ${key}`)
-      })
-    }, 450)
+  function reportPersistError(key, err) {
+    const message = err?.message || formatSupabaseError(err, key) || `Could not save ${key}`
+    console.error(`[supabase] persist ${key} failed`, err)
+    toastRef.current(message)
+    setSaveState('error')
   }
 
-  useEffect(() => () => {
+  function schedulePersist(key, fn) {
+    persistFns.current[key] = fn
+    clearTimeout(persistTimers.current[key])
+    persistTimers.current[key] = setTimeout(() => {
+      const pending = persistFns.current[key]
+      delete persistFns.current[key]
+      delete persistTimers.current[key]
+      if (!pending) return
+      setSaveState('saving')
+      pending()
+        .then(() => setSaveState('saved'))
+        .catch((err) => reportPersistError(key, err))
+    }, PERSIST_DEBOUNCE_MS)
+  }
+
+  async function flushPersists() {
+    const entries = Object.entries(persistFns.current)
     Object.values(persistTimers.current).forEach(clearTimeout)
+    persistTimers.current = {}
+    persistFns.current = {}
+    if (!entries.length) return
+    setSaveState('saving')
+    const results = await Promise.allSettled(entries.map(([, fn]) => fn()))
+    const failed = results.find((r) => r.status === 'rejected')
+    if (failed) {
+      reportPersistError('flush', failed.reason)
+      return
+    }
+    setSaveState('saved')
+  }
+
+  const flushPersistsRef = useRef(flushPersists)
+  flushPersistsRef.current = flushPersists
+
+  useEffect(() => {
+    const onLeave = () => {
+      // Fire pending writes before the document unloads (refresh/close/tab hide).
+      void flushPersistsRef.current()
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') onLeave()
+    }
+    window.addEventListener('pagehide', onLeave)
+    window.addEventListener('beforeunload', onLeave)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('pagehide', onLeave)
+      window.removeEventListener('beforeunload', onLeave)
+      document.removeEventListener('visibilitychange', onVisibility)
+      void flushPersistsRef.current()
+    }
   }, [])
 
   useEffect(() => {
@@ -81,6 +134,7 @@ export default function App() {
         if (!Object.keys(workspace.athletes).length) {
           throw new Error('No athletes found in Supabase. Run npm run seed:supabase.')
         }
+        // Use DB rows only — do not merge createWorkspace() / domain mock presets.
         const nextCoach = workspace.coaches.find((c) => c.id === FALLBACK_COACH.id) || workspace.coaches[0]
         setCoach(nextCoach)
         setAthletes(workspace.athletes)
@@ -91,7 +145,7 @@ export default function App() {
         console.error('[supabase] workspace load failed', err)
         setBoot({
           status: 'error',
-          error: err?.message || 'Could not load workspace from Supabase.',
+          error: err?.message || formatSupabaseError(err, 'workspace load') || 'Could not load workspace from Supabase.',
         })
       }
     }
@@ -128,18 +182,23 @@ export default function App() {
       if (!current) return prev
       const next = mutator({ ...current })
       schedulePersist(`athlete:${athleteId}`, () => persistAthleteStructure(next))
+      // If this mutation also changed plans (e.g. via nested callers), they persist separately.
       return { ...prev, [athleteId]: next }
     })
   }
 
   function patchPlan(mutator) {
-    if (!selectedBlock) return
-    patchAthlete((c) => {
-      const current = syncPlanLength(c.plans[selectedBlock.id] || emptyPlan(selectedBlock.weeks), selectedBlock.weeks)
-      const nextPlan = mutator(current, c)
-      const next = { ...c, plans: { ...c.plans, [selectedBlock.id]: nextPlan } }
-      schedulePersist(`plan:${c.id}:${selectedBlock.id}`, () => persistPlan(c.id, selectedBlock.id, nextPlan))
-      return next
+    if (!selectedBlock || !athleteId) return
+    const blockId = selectedBlock.id
+    const blockWeeks = selectedBlock.weeks
+    setAthletes((prev) => {
+      const current = prev[athleteId]
+      if (!current) return prev
+      const base = syncPlanLength(current.plans[blockId] || emptyPlan(blockWeeks), blockWeeks)
+      const nextPlan = mutator(base, current)
+      const next = { ...current, plans: { ...current.plans, [blockId]: nextPlan } }
+      schedulePersist(`plan:${athleteId}:${blockId}`, () => persistPlan(athleteId, blockId, nextPlan))
+      return { ...prev, [athleteId]: next }
     })
   }
 
@@ -148,18 +207,24 @@ export default function App() {
     const blockList = normalizeBlocks(person.blocks, runwayWeeks(person))
     const block = blockList.find((b) => b.id === id)
     if (!block) return
+    const hadPlan = Boolean(person.plans[id])
     const synced = syncPlanLength(person.plans[id] || emptyPlan(block.weeks), block.weeks)
     setAthletes((prev) => {
       const current = prev[person.id]
       if (!current) return prev
+      const nextPlan = syncPlanLength(current.plans[id] || emptyPlan(block.weeks), block.weeks)
       const next = {
         ...current,
         plans: {
           ...current.plans,
-          [id]: syncPlanLength(current.plans[id] || emptyPlan(block.weeks), block.weeks),
+          [id]: nextPlan,
         },
       }
-      schedulePersist(`plan:${person.id}:${id}`, () => persistPlan(person.id, id, next.plans[id]))
+      // Only write when creating a missing plan or length-syncing an existing one.
+      const prevLen = current.plans[id]?.weeks?.length
+      if (!hadPlan || prevLen !== nextPlan.weeks.length) {
+        schedulePersist(`plan:${person.id}:${id}`, () => persistPlan(person.id, id, nextPlan))
+      }
       return { ...prev, [person.id]: next }
     })
     let week = opts.week ?? 0
@@ -214,7 +279,7 @@ export default function App() {
       if (enter) openPerson(next, 'athlete')
     } catch (err) {
       console.error('[supabase] connect failed', err)
-      setToast(err?.message || 'Could not save connection to Supabase')
+      setToast(err?.message || formatSupabaseError(err, 'connect'))
     }
   }
 
@@ -385,7 +450,8 @@ export default function App() {
       setToast(media ? `Clip saved · ${caption}${estimate}` : `Logged · ${caption}${estimate}`)
     } catch (err) {
       console.error('[supabase] logSet failed', err)
-      setToast(err?.message || 'Could not save set to Supabase')
+      setToast(err?.message || formatSupabaseError(err, 'log set'))
+      setSaveState('error')
     }
   }
 
@@ -425,7 +491,8 @@ export default function App() {
       await insertMessage(id, msg)
     } catch (err) {
       console.error('[supabase] sendMessage failed', err)
-      setToast(err?.message || 'Could not send message')
+      setToast(err?.message || formatSupabaseError(err, 'send message'))
+      setSaveState('error')
     }
   }
 
@@ -509,6 +576,8 @@ export default function App() {
           onCopy={copyCode}
         />
         {toast && <Toast text={toast} tone={role} />}
+        {saveState === 'saving' && !toast && <Toast text="Saving…" tone={role} />}
+        {saveState === 'error' && !toast && <Toast text="Save failed — check console" tone={role} />}
       </>
     )
   }
@@ -624,6 +693,8 @@ export default function App() {
         {page === 'videos' && <VideosPage athlete={athlete} role={role} onOpenDay={openVideoDay} />}
       </main>
       {toast && <Toast text={toast} tone={role} />}
+      {saveState === 'saving' && !toast && <Toast text="Saving…" tone={role} />}
+      {saveState === 'error' && !toast && <Toast text="Save failed — check console" tone={role} />}
     </div>
   )
 }
