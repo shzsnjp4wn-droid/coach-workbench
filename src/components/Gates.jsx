@@ -53,7 +53,8 @@ export function ProfileGate({
   const [busy, setBusy] = useState(false)
   const [step, setStep] = useState('form') // form | code
   const [verifyCode, setVerifyCode] = useState('')
-  const [previewCode, setPreviewCode] = useState(null)
+  const [issuedCode, setIssuedCode] = useState(null)
+  const [codeEmailed, setCodeEmailed] = useState(false)
   const [error, setError] = useState('')
   const accent = role === 'coach' ? 'cyan' : 'lime'
 
@@ -84,7 +85,10 @@ export function ProfileGate({
           bodyweightKg: Number(bodyweightKg) || undefined,
         },
       })
-      setPreviewCode(result?.previewCode || null)
+      const code = result?.code || result?.previewCode || null
+      setIssuedCode(code)
+      setCodeEmailed(Boolean(result?.delivered))
+      setVerifyCode(code || '')
       setStep('code')
     } catch (err) {
       setError(err?.message || 'Could not send code')
@@ -137,8 +141,10 @@ export function ProfileGate({
             <h1 className="mt-2 font-display text-4xl text-white">{step === 'code' ? 'Enter your code' : 'Create your account'}</h1>
             <p className="mt-2 text-sm text-zinc-500">
               {step === 'code'
-                ? `We sent a 6-digit code to ${email}. Confirm it to finish creating your ${role} profile.`
-                : `Name + email, then confirm the code we email you. You’ll get a unique share code (${role === 'coach' ? 'CH-…' : 'ATH-…'}).`}
+                ? (codeEmailed
+                  ? `Enter the 6-digit code we emailed to ${email}.`
+                  : `Enter the 6-digit code below to finish creating your ${role} profile.`)
+                : `Name + email, then confirm a 6-digit code. You’ll get a unique share code (${role === 'coach' ? 'CH-…' : 'ATH-…'}).`}
             </p>
             {step === 'form' ? (
               <form className="mt-5 grid gap-3" onSubmit={sendCode}>
@@ -190,9 +196,15 @@ export function ProfileGate({
               </form>
             ) : (
               <form className="mt-5 grid gap-3" onSubmit={submitVerify}>
-                {previewCode && (
-                  <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-50">
-                    Email delivery isn’t configured on this project yet — use code <span className="font-mono font-semibold">{previewCode}</span> to continue.
+                {issuedCode && (
+                  <div className={`rounded-lg border px-3 py-3 ${codeEmailed ? 'border-white/10 bg-black/30' : 'border-lime-400/40 bg-lime-400/10'}`}>
+                    <div className="text-[10px] uppercase tracking-widest text-zinc-400">Your verification code</div>
+                    <div className="mt-1 font-mono text-3xl tracking-[0.35em] text-white">{issuedCode}</div>
+                    {!codeEmailed && (
+                      <p className="mt-2 text-xs text-zinc-400">
+                        Type or confirm this code below. (Outbound code email isn’t configured on this project yet — no magic links.)
+                      </p>
+                    )}
                   </div>
                 )}
                 <input
@@ -213,7 +225,7 @@ export function ProfileGate({
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setStep('form'); setVerifyCode(''); setPreviewCode(null); setError('') }}
+                  onClick={() => { setStep('form'); setVerifyCode(''); setIssuedCode(null); setCodeEmailed(false); setError('') }}
                   className="text-xs text-zinc-500"
                 >
                   Back / change email
