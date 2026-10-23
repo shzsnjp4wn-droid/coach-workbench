@@ -284,12 +284,16 @@ export function ConnectGate({
   coaches,
   coach,
   selfAthlete,
+  connectionRequests = [],
   onConnectCoach,
   onDisconnect,
   onOpen,
   onBack,
   onCopy,
   onSearchConnect,
+  onAcceptRequest,
+  onDeclineRequest,
+  onCancelRequest,
 }) {
   const [query, setQuery] = useState('')
   const [transferHistory, setTransferHistory] = useState(true)
@@ -304,6 +308,25 @@ export function ConnectGate({
     ]
     return people.filter((p) => matchesUserQuery(p, q)).slice(0, 30)
   }, [query, coaches, list])
+
+  const inbox = useMemo(() => {
+    if (role === 'coach' && coach) {
+      return connectionRequests.filter((r) => r.coachId === coach.id)
+    }
+    if (role === 'athlete' && selfAthlete) {
+      return connectionRequests.filter((r) => r.athleteId === selfAthlete.id)
+    }
+    return []
+  }, [connectionRequests, role, coach, selfAthlete])
+
+  const needsMyConfirm = inbox.filter((r) => (
+    (role === 'athlete' && r.initiatedBy === 'coach')
+    || (role === 'coach' && r.initiatedBy === 'athlete')
+  ))
+  const waitingOnThem = inbox.filter((r) => (
+    (role === 'athlete' && r.initiatedBy === 'athlete')
+    || (role === 'coach' && r.initiatedBy === 'coach')
+  ))
 
   return (
     <div className="min-h-svh bg-[#07080b] px-4 py-6 text-zinc-200">
@@ -362,7 +385,7 @@ export function ConnectGate({
                             onClick={() => onSearchConnect(person)}
                             className="rounded-md bg-cyan-400 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-black"
                           >
-                            {person.coachId === coach.id ? 'Open' : 'Connect'}
+                            {person.coachId === coach.id ? 'Open' : 'Request'}
                           </button>
                         ) : (
                           <span className="text-[10px] uppercase text-zinc-600">Coach</span>
@@ -372,87 +395,155 @@ export function ConnectGate({
                   </div>
                 )}
               </Card>
+              {(needsMyConfirm.length > 0 || waitingOnThem.length > 0) && (
+                <Card className="p-4">
+                  <div className="text-[10px] uppercase tracking-[0.16em] text-cyan-300">Connection requests</div>
+                  <p className="mt-1 text-xs text-zinc-500">Both sides must confirm before a coaching link is active.</p>
+                  <div className="mt-3 space-y-2">
+                    {needsMyConfirm.map((req) => {
+                      const athlete = athletes[req.athleteId]
+                      return (
+                        <div key={req.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-cyan-400/30 bg-cyan-400/8 px-3 py-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm text-white">{athlete?.name || req.athleteId} wants to connect</div>
+                            <div className="text-[11px] text-zinc-500">They started the request · you confirm</div>
+                          </div>
+                          <button type="button" onClick={() => onAcceptRequest?.(req.id)} className="rounded-md bg-cyan-400 px-2 py-1 text-[10px] font-semibold uppercase text-black">Accept</button>
+                          <button type="button" onClick={() => onDeclineRequest?.(req.id)} className="rounded-md border border-white/15 px-2 py-1 text-[10px] uppercase text-zinc-400">Decline</button>
+                        </div>
+                      )
+                    })}
+                    {waitingOnThem.map((req) => {
+                      const athlete = athletes[req.athleteId]
+                      return (
+                        <div key={req.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 px-3 py-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm text-white">Waiting on {athlete?.name || req.athleteId}</div>
+                            <div className="text-[11px] text-zinc-500">Your request is pending their confirmation</div>
+                          </div>
+                          <button type="button" onClick={() => onCancelRequest?.(req.id)} className="rounded-md border border-white/15 px-2 py-1 text-[10px] uppercase text-zinc-400">Cancel</button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </Card>
+              )}
               <Roster title="On your floor" people={connected} action="Open" onAction={onOpen} />
             </div>
           </div>
         ) : selfAthlete ? (
-          <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-            <Card className="p-5">
-              <div className="flex items-center gap-2 text-lime-300"><Dumbbell size={16} /> {selfAthlete.name}</div>
-              <div className="mt-3 font-mono text-2xl tracking-widest text-lime-200">{selfAthlete.code}</div>
-              <p className="mt-2 text-sm text-zinc-500">Share this code with your coach. Search below for a coach by name or CH- code.</p>
-              <button type="button" onClick={() => onCopy(selfAthlete.code)} className="mt-3 inline-flex items-center gap-2 rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">
-                <Copy size={12} /> Copy my code
-              </button>
-              <div className="relative mt-5">
-                <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Name or CH-…"
-                  className="w-full rounded-lg border border-white/10 bg-[#151821] py-2.5 pl-9 pr-3 font-mono text-sm"
-                />
-              </div>
-              {query.trim() && (
-                <div className="mt-3 max-h-64 space-y-1 overflow-auto">
-                  {!directoryHits.length && <div className="px-2 py-3 text-sm text-zinc-500">No users match.</div>}
-                  {directoryHits.map((person) => (
-                    <div key={`${person.kind}-${person.id}`} className="flex items-center gap-2 rounded-lg border border-white/8 px-2 py-2">
-                      <Avatar id={person.id} name={person.name} className="h-8 w-8 text-xs" />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm text-white">{person.name}</div>
-                        <div className="font-mono text-[11px] text-zinc-500">{person.code} · {person.kind}</div>
+          <div className="grid gap-4">
+            {(needsMyConfirm.length > 0 || waitingOnThem.length > 0) && (
+              <Card className="p-4">
+                <div className="text-[10px] uppercase tracking-[0.16em] text-lime-300">Connection requests</div>
+                <p className="mt-1 text-xs text-zinc-500">Both sides must confirm before a coaching link is active.</p>
+                <div className="mt-3 space-y-2">
+                  {needsMyConfirm.map((req) => {
+                    const other = coaches.find((c) => c.id === req.coachId)
+                    return (
+                      <div key={req.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-lime-400/30 bg-lime-400/8 px-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm text-white">{other?.name || req.coachId} wants to coach you</div>
+                          <div className="text-[11px] text-zinc-500">They started the request · you confirm</div>
+                        </div>
+                        <button type="button" onClick={() => onAcceptRequest?.(req.id)} className="rounded-md bg-lime-400 px-2 py-1 text-[10px] font-semibold uppercase text-black">Accept</button>
+                        <button type="button" onClick={() => onDeclineRequest?.(req.id)} className="rounded-md border border-white/15 px-2 py-1 text-[10px] uppercase text-zinc-400">Decline</button>
                       </div>
-                      {person.kind === 'coach' ? (
-                        <button
-                          type="button"
-                          disabled={Boolean(selfAthlete.coachId)}
-                          onClick={() => onConnectCoach(person.id, { transferHistory })}
-                          className="rounded-md bg-lime-400 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-black disabled:opacity-40"
-                        >
-                          Connect
-                        </button>
-                      ) : person.id === selfAthlete.id ? (
-                        <span className="text-[10px] uppercase text-zinc-600">You</span>
-                      ) : (
-                        <span className="text-[10px] uppercase text-zinc-600">Athlete</span>
-                      )}
-                    </div>
-                  ))}
+                    )
+                  })}
+                  {waitingOnThem.map((req) => {
+                    const other = coaches.find((c) => c.id === req.coachId)
+                    return (
+                      <div key={req.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-white/10 px-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm text-white">Waiting on {other?.name || req.coachId}</div>
+                          <div className="text-[11px] text-zinc-500">Your request is pending their confirmation</div>
+                        </div>
+                        <button type="button" onClick={() => onCancelRequest?.(req.id)} className="rounded-md border border-white/15 px-2 py-1 text-[10px] uppercase text-zinc-400">Cancel</button>
+                      </div>
+                    )
+                  })}
                 </div>
-              )}
-            </Card>
-            <Card className="p-4">
-              {selfAthlete.coachId ? (
-                <>
-                  <p className="text-sm text-zinc-400">
-                    Connected to {coaches.find((c) => c.id === selfAthlete.coachId)?.name || 'your coach'}.
-                  </p>
-                  <button type="button" onClick={() => onOpen(selfAthlete.id)} className="mt-4 w-full rounded-lg bg-lime-400 py-2 text-sm font-semibold text-black">Open programme</button>
-                  <button
-                    type="button"
-                    onClick={() => onDisconnect?.()}
-                    className="mt-2 w-full rounded-lg border border-orange-400/40 py-2 text-sm text-orange-200"
-                  >
-                    Disconnect from current coach
-                  </button>
-                  <p className="mt-2 text-[11px] text-zinc-500">You must disconnect before connecting to a different coach.</p>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm text-zinc-400">No coach yet. Find them by name or CH- code below.</p>
-                  <label className="mt-3 flex items-start gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-zinc-300">
-                    <input type="checkbox" checked={transferHistory} onChange={(e) => setTransferHistory(e.target.checked)} className="mt-0.5" />
-                    <span>Transfer past programme blocks, logs, and PB history to the new coach</span>
-                  </label>
-                </>
-              )}
-              {selfAthlete.coachId && (
-                <div className="mt-4 text-xs text-zinc-500">
-                  Est. · S {fmtKg(latestEstimates(selfAthlete).squat)} · B {fmtKg(latestEstimates(selfAthlete).bench)} · D {fmtKg(latestEstimates(selfAthlete).deadlift)}
+              </Card>
+            )}
+            <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+              <Card className="p-5">
+                <div className="flex items-center gap-2 text-lime-300"><Dumbbell size={16} /> {selfAthlete.name}</div>
+                <div className="mt-3 font-mono text-2xl tracking-widest text-lime-200">{selfAthlete.code}</div>
+                <p className="mt-2 text-sm text-zinc-500">Share this code with your coach. Search below for a coach by name or CH- code.</p>
+                <button type="button" onClick={() => onCopy(selfAthlete.code)} className="mt-3 inline-flex items-center gap-2 rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">
+                  <Copy size={12} /> Copy my code
+                </button>
+                <div className="relative mt-5">
+                  <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Name or CH-…"
+                    className="w-full rounded-lg border border-white/10 bg-[#151821] py-2.5 pl-9 pr-3 font-mono text-sm"
+                  />
                 </div>
-              )}
-            </Card>
+                {query.trim() && (
+                  <div className="mt-3 max-h-64 space-y-1 overflow-auto">
+                    {!directoryHits.length && <div className="px-2 py-3 text-sm text-zinc-500">No users match.</div>}
+                    {directoryHits.map((person) => (
+                      <div key={`${person.kind}-${person.id}`} className="flex items-center gap-2 rounded-lg border border-white/8 px-2 py-2">
+                        <Avatar id={person.id} name={person.name} className="h-8 w-8 text-xs" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm text-white">{person.name}</div>
+                          <div className="font-mono text-[11px] text-zinc-500">{person.code} · {person.kind}</div>
+                        </div>
+                        {person.kind === 'coach' ? (
+                          <button
+                            type="button"
+                            disabled={Boolean(selfAthlete.coachId)}
+                            onClick={() => onConnectCoach(person.id, { transferHistory })}
+                            className="rounded-md bg-lime-400 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-black disabled:opacity-40"
+                          >
+                            Request
+                          </button>
+                        ) : person.id === selfAthlete.id ? (
+                          <span className="text-[10px] uppercase text-zinc-600">You</span>
+                        ) : (
+                          <span className="text-[10px] uppercase text-zinc-600">Athlete</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+              <Card className="p-4">
+                {selfAthlete.coachId ? (
+                  <>
+                    <p className="text-sm text-zinc-400">
+                      Connected to {coaches.find((c) => c.id === selfAthlete.coachId)?.name || 'your coach'}.
+                    </p>
+                    <button type="button" onClick={() => onOpen(selfAthlete.id)} className="mt-4 w-full rounded-lg bg-lime-400 py-2 text-sm font-semibold text-black">Open programme</button>
+                    <button
+                      type="button"
+                      onClick={() => onDisconnect?.()}
+                      className="mt-2 w-full rounded-lg border border-orange-400/40 py-2 text-sm text-orange-200"
+                    >
+                      Disconnect from current coach
+                    </button>
+                    <p className="mt-2 text-[11px] text-zinc-500">You must disconnect before connecting to a different coach.</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-sm text-zinc-400">No coach yet. Find them by name or CH- code below.</p>
+                    <label className="mt-3 flex items-start gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-zinc-300">
+                      <input type="checkbox" checked={transferHistory} onChange={(e) => setTransferHistory(e.target.checked)} className="mt-0.5" />
+                      <span>Transfer past programme blocks, logs, and PB history to the new coach</span>
+                    </label>
+                  </>
+                )}
+                {selfAthlete.coachId && (
+                  <div className="mt-4 text-xs text-zinc-500">
+                    Est. · S {fmtKg(latestEstimates(selfAthlete).squat)} · B {fmtKg(latestEstimates(selfAthlete).bench)} · D {fmtKg(latestEstimates(selfAthlete).deadlift)}
+                  </div>
+                )}
+              </Card>
+            </div>
           </div>
         ) : null}
       </div>

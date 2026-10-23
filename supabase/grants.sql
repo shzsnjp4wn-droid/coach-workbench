@@ -27,5 +27,6 @@ grant all on table
   public.e1rm_series,
   public.messages,
   public.coaching_stints,
-  public.email_verifications
+  public.email_verifications,
+  public.connection_requests
 to anon, authenticated, service_role;

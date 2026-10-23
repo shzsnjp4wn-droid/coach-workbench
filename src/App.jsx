@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Dumbbell, LayoutGrid, MessageCircle, TrendingUp, Video, Zap } from 'lucide-react'
+import { ChevronDown, Dumbbell, LayoutGrid, MessageCircle, Settings, TrendingUp, Video, Zap } from 'lucide-react'
+import { AccountSettings } from './components/AccountSettings'
 import { AthleteProgramme } from './components/AthleteProgramme'
 import { AthleteToday } from './components/AthleteToday'
 import { CoachProgramme } from './components/CoachProgramme'
@@ -33,10 +34,14 @@ import {
 } from './domain'
 import {
   allocateUniqueUserCode,
+  cancelConnectionRequest,
   confirmEmailVerification,
+  consumeAuthRedirect,
+  createConnectionRequest,
   deleteAccount,
   deleteVideo,
   endActiveStint,
+  fetchConnectionRequests,
   fetchWorkspace,
   formatSupabaseError,
   insertAthleteWithStructure,
@@ -46,6 +51,7 @@ import {
   persistAthleteStructure,
   persistPlan,
   requestEmailVerification,
+  respondConnectionRequest,
   startCoachingStint,
   uploadMedia,
   upsertE1rmPoint,
@@ -86,6 +92,8 @@ export default function App() {
   const [stage, setStage] = useState('macro')
   const [toast, setToast] = useState('')
   const [saveState, setSaveState] = useState('idle')
+  const [connectionRequests, setConnectionRequests] = useState([])
+  const [showAccountSettings, setShowAccountSettings] = useState(false)
   const persistTimers = useRef({})
   const persistFns = useRef({})
   const athletesRef = useRef(athletes)
@@ -163,7 +171,20 @@ export default function App() {
     async function bootFromSupabase() {
       setBoot({ status: 'loading', error: null })
       try {
-        const workspace = await fetchWorkspace()
+        const authRedirect = await consumeAuthRedirect()
+        if (cancelled || gen !== bootGenRef.current) return
+        if (authRedirect.kind === 'error') {
+          setToast(authRedirect.message || 'Email confirmation link failed')
+        } else if (authRedirect.kind === 'confirmed') {
+          setToast(authRedirect.email
+            ? `Email confirmed · ${authRedirect.email}`
+            : 'Email confirmed — continue in the app')
+        }
+
+        const [workspace, requests] = await Promise.all([
+          fetchWorkspace(),
+          fetchConnectionRequests(),
+        ])
         if (cancelled || gen !== bootGenRef.current) return
         if (!workspace.coaches.length) {
           throw new Error('No coaches found in Supabase. Run the seed script after schema setup.')
@@ -176,6 +197,7 @@ export default function App() {
         setCoaches(nextCoaches)
         setAthletes(workspace.athletes)
         setMessages(workspace.messages)
+        setConnectionRequests(requests)
         athletesRef.current = workspace.athletes
         messagesRef.current = workspace.messages
 
@@ -384,30 +406,23 @@ export default function App() {
   }
 
   async function handleDeleteAccount() {
-    const label = role === 'coach' ? coach?.name : rawAthlete?.name
     const id = role === 'coach' ? coach?.id : rawAthlete?.id
     if (!id) return
-    if (!window.confirm(`Delete ${label}'s account permanently? This cannot be undone.`)) return
-    try {
-      await deleteAccount({ role, id })
-      if (role === 'coach') {
-        setCoaches((prev) => prev.filter((c) => c.id !== id))
-        setCoach(FALLBACK_COACH)
-      } else {
-        const next = { ...athletesRef.current }
-        delete next[id]
-        athletesRef.current = next
-        setAthletes(next)
-        setAthleteId(null)
-      }
-      localStorage.removeItem(SESSION_KEY)
-      setScreen('role')
-      setRole(null)
-      setToast('Account deleted')
-    } catch (err) {
-      console.error('[supabase] delete account failed', err)
-      setToast(err?.message || formatSupabaseError(err, 'delete account'))
+    await deleteAccount({ role, id })
+    if (role === 'coach') {
+      setCoaches((prev) => prev.filter((c) => c.id !== id))
+      setCoach(FALLBACK_COACH)
+    } else {
+      const next = { ...athletesRef.current }
+      delete next[id]
+      athletesRef.current = next
+      setAthletes(next)
+      setAthleteId(null)
     }
+    localStorage.removeItem(SESSION_KEY)
+    setScreen('role')
+    setRole(null)
+    setToast('Account deleted')
   }
 
   function selectExistingProfile(person) {
@@ -453,43 +468,117 @@ export default function App() {
     }
   }
 
-  async function connectAthleteToCoach(athletePersonId, coachPersonId, { open = false, transferHistory = false } = {}) {
+  async function refreshConnectionRequests() {
+    try {
+      const rows = await fetchConnectionRequests()
+      setConnectionRequests(rows)
+    } catch (err) {
+      console.warn('[supabase] refresh connection requests', err)
+    }
+  }
+
+  async function finalizeConnection(athletePersonId, coachPersonId, { transferHistory = false, open = false } = {}) {
+    const person = athletesRef.current[athletePersonId]
+    const targetCoach = coaches.find((c) => c.id === coachPersonId) || coach
+    if (!person || !targetCoach) return null
+    const stint = await startCoachingStint({
+      athleteId: athletePersonId,
+      coachId: targetCoach.id,
+      transferHistory,
+      startBodyweightKg: person.bodyweightKg,
+      startTotalKg: estimatedTotalKg(person),
+      startDots: currentGl(person),
+    })
+    const next = {
+      ...person,
+      coachId: targetCoach.id,
+      activeStint: stint,
+      stints: [stint, ...(person.stints || []).filter((s) => s.id !== stint.id)],
+    }
+    const nextAthletes = { ...athletesRef.current, [athletePersonId]: next }
+    athletesRef.current = nextAthletes
+    setAthletes(nextAthletes)
+    setCoach(targetCoach)
+    setToast(`${person.name} connected to ${targetCoach.name}`)
+    if (open) openPerson(next, role === 'athlete' ? 'athlete' : 'coach')
+    return next
+  }
+
+  /** Propose a connection — the other party must accept before it becomes active. */
+  async function requestConnection(athletePersonId, coachPersonId, { transferHistory = false } = {}) {
     const person = athletesRef.current[athletePersonId]
     const targetCoach = coaches.find((c) => c.id === coachPersonId) || coach
     if (!person || !targetCoach) return
     if (person.coachId === targetCoach.id) {
       setToast(`${person.name} is already connected to ${targetCoach.name}`)
-      if (open) openPerson({ ...person, coachId: targetCoach.id }, role === 'athlete' ? 'athlete' : 'coach')
       return
     }
     if (person.coachId && person.coachId !== targetCoach.id) {
-      setToast('Disconnect from your current coach before connecting to another.')
+      setToast('Disconnect from the current coach before requesting another.')
       return
     }
     try {
-      const stint = await startCoachingStint({
+      const req = await createConnectionRequest({
         athleteId: athletePersonId,
         coachId: targetCoach.id,
+        initiatedBy: role === 'coach' ? 'coach' : 'athlete',
         transferHistory,
-        startBodyweightKg: person.bodyweightKg,
-        startTotalKg: estimatedTotalKg(person),
-        startDots: currentGl(person),
       })
-      const next = {
-        ...person,
-        coachId: targetCoach.id,
-        activeStint: stint,
-        stints: [stint, ...(person.stints || []).filter((s) => s.id !== stint.id)],
-      }
-      const nextAthletes = { ...athletesRef.current, [athletePersonId]: next }
-      athletesRef.current = nextAthletes
-      setAthletes(nextAthletes)
-      setCoach(targetCoach)
-      setToast(`${person.name} connected to ${targetCoach.name}`)
-      if (open) openPerson(next, role === 'athlete' ? 'athlete' : 'coach')
+      setConnectionRequests((prev) => [req, ...prev.filter((r) => r.id !== req.id)])
+      setToast(role === 'coach'
+        ? `Request sent to ${person.name} — waiting for their confirmation`
+        : `Request sent to ${targetCoach.name} — waiting for their confirmation`)
     } catch (err) {
-      console.error('[supabase] connect failed', err)
-      setToast(err?.message || formatSupabaseError(err, 'connect'))
+      console.error('[supabase] connection request failed', err)
+      setToast(err?.message || formatSupabaseError(err, 'connection request'))
+    }
+  }
+
+  async function acceptConnectionRequest(requestId) {
+    const pending = connectionRequests.find((r) => r.id === requestId)
+    if (!pending) return
+    // Only the counterparty can accept.
+    if (pending.initiatedBy === 'coach' && role !== 'athlete') {
+      setToast('Waiting for the athlete to confirm this request')
+      return
+    }
+    if (pending.initiatedBy === 'athlete' && role !== 'coach') {
+      setToast('Waiting for the coach to confirm this request')
+      return
+    }
+    try {
+      const updated = await respondConnectionRequest(requestId, 'accepted')
+      setConnectionRequests((prev) => prev.filter((r) => r.id !== requestId))
+      await finalizeConnection(updated.athleteId, updated.coachId, {
+        transferHistory: updated.transferHistory,
+        open: false,
+      })
+      await refreshConnectionRequests()
+    } catch (err) {
+      console.error('[supabase] accept connection failed', err)
+      setToast(err?.message || formatSupabaseError(err, 'accept connection'))
+    }
+  }
+
+  async function declineConnectionRequest(requestId) {
+    try {
+      await respondConnectionRequest(requestId, 'declined')
+      setConnectionRequests((prev) => prev.filter((r) => r.id !== requestId))
+      setToast('Connection request declined')
+    } catch (err) {
+      console.error('[supabase] decline connection failed', err)
+      setToast(err?.message || formatSupabaseError(err, 'decline connection'))
+    }
+  }
+
+  async function cancelOwnConnectionRequest(requestId) {
+    try {
+      await cancelConnectionRequest(requestId)
+      setConnectionRequests((prev) => prev.filter((r) => r.id !== requestId))
+      setToast('Connection request cancelled')
+    } catch (err) {
+      console.error('[supabase] cancel connection failed', err)
+      setToast(err?.message || formatSupabaseError(err, 'cancel connection'))
     }
   }
 
@@ -502,7 +591,7 @@ export default function App() {
       setToast(`${person.name} is with another coach — they must disconnect first.`)
       return
     }
-    await connectAthleteToCoach(person.id, coach.id, { open: false, transferHistory: true })
+    await requestConnection(person.id, coach.id, { transferHistory: true })
   }
 
   async function copyCode(text) {
@@ -565,10 +654,13 @@ export default function App() {
           setAthletes(nextAthletes)
         }
         setSaveState('saving')
-        uploadedUrl = await uploadMedia(current.id, videoId, media)
-        if (media.url?.startsWith('blob:')) {
-          try { URL.revokeObjectURL(media.url) } catch { /* ignore */ }
-        }
+        // Keep a hard reference to the File so state updates can't drop it mid-save.
+        uploadedUrl = await uploadMedia(current.id, videoId, {
+          file: media.file || null,
+          url: media.url,
+          name: media.name,
+          type: media.type,
+        })
         videos = videos.map((v) => (v.id === videoId ? { ...v, url: uploadedUrl } : v))
       } else if (videoId) {
         videos = videos.map((v) => (v.id === videoId ? {
@@ -647,7 +739,7 @@ export default function App() {
       athletesRef.current = nextAthletes
       setAthletes(nextAthletes)
 
-      // Only persist durable (non-blob) URLs so Videos tab survives refresh.
+      // Persist durable Storage URLs only — never blob: — so Videos survives refresh.
       if (media && videoId && uploadedUrl) {
         const videoRow = videos.find((v) => v.id === videoId)
         await upsertVideo(current.id, { ...videoRow, url: uploadedUrl, logId: null }, cid)
@@ -666,6 +758,9 @@ export default function App() {
         if (videoRow && videoRow.url && !String(videoRow.url).startsWith('blob:')) {
           await upsertVideo(current.id, { ...videoRow, logId: log.id }, cid)
         }
+      }
+      if (media?.url?.startsWith('blob:')) {
+        try { URL.revokeObjectURL(media.url) } catch { /* ignore */ }
       }
       if (seriesPoint) {
         await upsertE1rmPoint(current.id, { ...seriesPoint, coachId: cid }, cid)
@@ -875,10 +970,14 @@ export default function App() {
           coaches={coaches}
           athletes={athletes}
           selfAthlete={role === 'athlete' ? rawAthlete : null}
+          connectionRequests={connectionRequests}
           onOpen={(id) => openPerson(athletes[id], role)}
-          onConnectCoach={(coachId, { transferHistory }) => connectAthleteToCoach(athleteId, coachId, { open: true, transferHistory })}
+          onConnectCoach={(coachId, { transferHistory }) => requestConnection(athleteId, coachId, { transferHistory })}
           onDisconnect={() => disconnectFromCoach(athleteId)}
           onSearchConnect={onCoachSearchConnect}
+          onAcceptRequest={acceptConnectionRequest}
+          onDeclineRequest={declineConnectionRequest}
+          onCancelRequest={cancelOwnConnectionRequest}
           onBack={() => { setScreen('profile') }}
           onCopy={copyCode}
         />
@@ -932,10 +1031,10 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => void handleDeleteAccount()}
-              className="rounded-md border border-red-400/30 px-3 py-1.5 text-xs uppercase tracking-wider text-red-300/90"
+              onClick={() => setShowAccountSettings(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400"
             >
-              Delete account
+              <Settings size={12} /> Account
             </button>
             <button
               type="button"
@@ -1041,6 +1140,17 @@ export default function App() {
         )}
         {page === 'videos' && <VideosPage athlete={athlete} role={role} onOpenDay={openVideoDay} />}
       </main>
+      {showAccountSettings && (
+        <AccountSettings
+          role={role}
+          person={role === 'coach' ? coach : rawAthlete}
+          onClose={() => setShowAccountSettings(false)}
+          onDeleteAccount={async () => {
+            await handleDeleteAccount()
+            setShowAccountSettings(false)
+          }}
+        />
+      )}
       {toast && <Toast text={toast} tone={role} />}
       {saveState === 'saving' && !toast && <Toast text="Saving…" tone={role} />}
       {saveState === 'error' && !toast && <Toast text="Save failed — check console" tone={role} />}
