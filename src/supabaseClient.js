@@ -13,9 +13,89 @@ if (!supabaseUrl || !supabaseAnonKey) {
 export const supabase = createClient(
   supabaseUrl || 'http://localhost',
   supabaseAnonKey || 'public-anon-key',
+  {
+    auth: {
+      detectSessionInUrl: true,
+      persistSession: true,
+      autoRefreshToken: true,
+      flowType: 'pkce',
+    },
+  },
 )
 
 const MEDIA_BUCKET = 'media'
+const RESUMABLE_THRESHOLD = 5 * 1024 * 1024
+
+/** Canonical app origin for Auth email redirects (Site URL / redirect allow-list). */
+export function getAppOrigin() {
+  const fromEnv = (import.meta.env.VITE_APP_URL || '').replace(/\/$/, '')
+  if (fromEnv) return fromEnv
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin
+  }
+  return 'http://localhost:5173'
+}
+
+export function getAuthRedirectTo(path = '/') {
+  const origin = getAppOrigin()
+  const clean = path.startsWith('/') ? path : `/${path}`
+  return `${origin}${clean}`
+}
+
+/**
+ * Consume Auth confirmation / magic-link callbacks from the URL.
+ * Fixes dead redirects that pointed at localhost:3000 by finishing the session
+ * exchange on the current app origin, then cleaning the address bar.
+ */
+export async function consumeAuthRedirect() {
+  if (typeof window === 'undefined') return { kind: 'none' }
+
+  const href = window.location.href
+  const search = new URLSearchParams(window.location.search)
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+
+  const error = search.get('error_description') || hashParams.get('error_description')
+    || search.get('error') || hashParams.get('error')
+  if (error) {
+    const cleaned = `${window.location.origin}${window.location.pathname}`
+    window.history.replaceState({}, document.title, cleaned)
+    return { kind: 'error', message: decodeURIComponent(error.replace(/\+/g, ' ')) }
+  }
+
+  // PKCE / code flow (?code=…)
+  if (search.get('code')) {
+    const { data, error: exErr } = await supabase.auth.exchangeCodeForSession(href)
+    const cleaned = `${window.location.origin}${window.location.pathname}`
+    window.history.replaceState({}, document.title, cleaned)
+    if (exErr) return { kind: 'error', message: exErr.message }
+    return { kind: 'confirmed', session: data.session, email: data.session?.user?.email || null }
+  }
+
+  // Implicit hash tokens (#access_token=…&type=signup)
+  const accessToken = hashParams.get('access_token')
+  const refreshToken = hashParams.get('refresh_token')
+  const type = hashParams.get('type')
+  if (accessToken && refreshToken) {
+    const { data, error: setErr } = await supabase.auth.setSession({
+      access_token: accessToken,
+      refresh_token: refreshToken,
+    })
+    const cleaned = `${window.location.origin}${window.location.pathname}`
+    window.history.replaceState({}, document.title, cleaned)
+    if (setErr) return { kind: 'error', message: setErr.message }
+    return {
+      kind: type === 'signup' || type === 'email' ? 'confirmed' : 'session',
+      session: data.session,
+      email: data.session?.user?.email || null,
+    }
+  }
+
+  const { data: { session } } = await supabase.auth.getSession()
+  if (session?.user?.email) {
+    return { kind: 'session', session, email: session.user.email }
+  }
+  return { kind: 'none' }
+}
 
 export function mapCoachRow(row) {
   if (!row) return null
@@ -450,13 +530,16 @@ export async function upsertSetLog(athleteId, log, coachId) {
 
 export async function upsertVideo(athleteId, video, coachId) {
   const cid = requireCoachId(coachId || video.coachId, 'upsert video')
+  if (video.url && String(video.url).startsWith('blob:')) {
+    throw new Error('upsert video: refusing to save a temporary blob URL — upload to Storage first')
+  }
   const { data, error } = await supabase
     .from('videos')
     .upsert({
       id: video.id,
       athlete_id: athleteId,
       coach_id: cid,
-      log_id: video.logId,
+      log_id: video.logId || null,
       date: video.date,
       block_key: video.blockId,
       block_name: video.blockName,
@@ -469,14 +552,18 @@ export async function upsertVideo(athleteId, video, coachId) {
       reps: video.reps,
       weight: video.weight,
       rpe: video.rpe,
-      url: video.url,
+      url: video.url || null,
       type: video.type || '',
       name: video.name || '',
       caption: video.caption || '',
     }, { onConflict: 'id' })
-    .select('id')
+    .select('id, url')
   assertOk(error, 'upsert video')
   assertWrote(data, 'upsert video')
+  if (video.url && data?.[0] && !data[0].url) {
+    throw new Error('upsert video: row saved without url — check grants/RLS on public.videos')
+  }
+  return data[0]
 }
 
 export async function upsertE1rmPoint(athleteId, point, coachId) {
@@ -546,6 +633,72 @@ export async function markMessagesRead(athleteId, readerRole, coachId) {
   assertOk(error, 'mark messages read')
 }
 
+function encodeTusMetadata(value) {
+  // TUS metadata values must be base64; browsers use btoa, Node uses Buffer.
+  if (typeof btoa === 'function') return btoa(unescape(encodeURIComponent(value)))
+  return Buffer.from(value, 'utf8').toString('base64')
+}
+
+async function uploadViaResumable(path, blob, contentType) {
+  const endpoint = `${supabaseUrl}/storage/v1/upload/resumable`
+  // Supabase Storage TUS requires 6 MiB chunks (except the final chunk).
+  const chunkSize = 6 * 1024 * 1024
+  let offset = 0
+
+  // Create the resumable upload session (TUS 1.0).
+  // Without Tus-Resumable the API returns 412 and phone-sized clips never land.
+  const create = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${supabaseAnonKey}`,
+      apikey: supabaseAnonKey,
+      'Tus-Resumable': '1.0.0',
+      'x-upsert': 'true',
+      'Upload-Length': String(blob.size),
+      'Upload-Metadata': [
+        `bucketName ${encodeTusMetadata(MEDIA_BUCKET)}`,
+        `objectName ${encodeTusMetadata(path)}`,
+        `contentType ${encodeTusMetadata(contentType)}`,
+        `cacheControl ${encodeTusMetadata('3600')}`,
+      ].join(','),
+    },
+  })
+  if (!create.ok && create.status !== 201) {
+    const detail = await create.text()
+    throw new Error(`resumable create failed (${create.status}): ${detail}`)
+  }
+  let uploadUrl = create.headers.get('Location')
+  if (!uploadUrl) throw new Error('resumable create: missing Location header')
+  if (uploadUrl.startsWith('/')) {
+    uploadUrl = `${supabaseUrl.replace(/\/$/, '')}${uploadUrl}`
+  } else if (!/^https?:\/\//i.test(uploadUrl)) {
+    uploadUrl = `${supabaseUrl.replace(/\/$/, '')}/storage/v1/upload/resumable/${uploadUrl}`
+  }
+
+  while (offset < blob.size) {
+    const end = Math.min(offset + chunkSize, blob.size)
+    const chunk = blob.slice(offset, end)
+    const patch = await fetch(uploadUrl, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${supabaseAnonKey}`,
+        apikey: supabaseAnonKey,
+        'Tus-Resumable': '1.0.0',
+        'Content-Type': 'application/offset+octet-stream',
+        'Upload-Offset': String(offset),
+        'Content-Length': String(chunk.size),
+      },
+      body: chunk,
+    })
+    if (!patch.ok && patch.status !== 204) {
+      const detail = await patch.text()
+      throw new Error(`resumable patch failed at ${offset} (${patch.status}): ${detail}`)
+    }
+    const next = patch.headers.get('Upload-Offset')
+    offset = next != null ? Number(next) : end
+  }
+}
+
 export async function uploadMedia(athleteId, objectId, media) {
   let blob = media?.file instanceof Blob ? media.file : null
   if (!blob && media?.url) {
@@ -555,26 +708,49 @@ export async function uploadMedia(athleteId, objectId, media) {
       throw new Error(`upload media: could not read file (${err?.message || err})`)
     }
   }
-  if (!blob) throw new Error('upload media: missing local file')
+  if (!blob) throw new Error('upload media: missing local file — re-attach the clip and try again')
+
+  const contentType = media.type || blob.type || 'application/octet-stream'
   const ext = (media.name && media.name.includes('.'))
     ? media.name.split('.').pop()
-    : (blob.type?.split('/')[1] || 'bin')
+    : (contentType.split('/')[1] || 'bin')
   const path = `${athleteId}/${objectId}.${ext}`
-  const { error: upError } = await supabase.storage
-    .from(MEDIA_BUCKET)
-    .upload(path, blob, {
-      upsert: true,
-      contentType: media.type || blob.type || 'application/octet-stream',
-      cacheControl: '3600',
-    })
-  if (upError) {
+
+  try {
+    if (blob.size >= RESUMABLE_THRESHOLD) {
+      await uploadViaResumable(path, blob, contentType)
+    } else {
+      const { error: upError } = await supabase.storage
+        .from(MEDIA_BUCKET)
+        .upload(path, blob, {
+          upsert: true,
+          contentType,
+          cacheControl: '3600',
+        })
+      if (upError) throw upError
+    }
+  } catch (err) {
     throw new Error(
-      formatSupabaseError(upError, 'upload media')
-      + ' — run supabase/storage.sql in the SQL editor if the media bucket is missing.',
+      formatSupabaseError(err, 'upload media')
+      + ' — check supabase/storage.sql and that the media bucket allows anon uploads.',
     )
   }
+
   const { data } = supabase.storage.from(MEDIA_BUCKET).getPublicUrl(path)
   if (!data?.publicUrl) throw new Error('upload media: no public URL returned')
+
+  // Confirm the object is actually readable before we treat the clip as durable.
+  try {
+    const head = await fetch(data.publicUrl, { method: 'HEAD' })
+    if (!head.ok) {
+      throw new Error(`upload media: public URL not reachable (HTTP ${head.status})`)
+    }
+  } catch (err) {
+    if (err?.message?.startsWith('upload media:')) throw err
+    // Some environments block HEAD; fall through with the public URL.
+    console.warn('[supabase] could not HEAD public media URL', err)
+  }
+
   return data.publicUrl
 }
 
@@ -699,6 +875,128 @@ export async function confirmEmailVerification({ email, code, role }) {
     .update({ consumed_at: new Date().toISOString() })
     .eq('id', match.id)
   return { email: normalized, payload: match.payload || {}, via: 'app' }
+}
+
+function mapConnectionRequest(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    athleteId: row.athlete_id,
+    coachId: row.coach_id,
+    initiatedBy: row.initiated_by,
+    status: row.status,
+    transferHistory: Boolean(row.transfer_history),
+    createdAt: row.created_at,
+    respondedAt: row.responded_at,
+  }
+}
+
+export async function fetchConnectionRequests() {
+  const { data, error } = await supabase
+    .from('connection_requests')
+    .select('*')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false })
+  if (error) {
+    if (isMissingColumnError(error) || /connection_requests|schema cache/i.test(error.message || '')) {
+      console.warn('[supabase] connection_requests missing — run migration_connection_requests.sql')
+      return []
+    }
+    assertOk(error, 'load connection requests')
+  }
+  return (data || []).map(mapConnectionRequest)
+}
+
+/** Either party proposes a link; the other must accept before a stint is created. */
+export async function createConnectionRequest({
+  athleteId,
+  coachId,
+  initiatedBy,
+  transferHistory = false,
+}) {
+  if (!athleteId || !coachId) throw new Error('athlete and coach are required')
+  if (initiatedBy !== 'athlete' && initiatedBy !== 'coach') {
+    throw new Error('initiatedBy must be athlete or coach')
+  }
+
+  const { data: athlete, error: athErr } = await supabase
+    .from('athletes')
+    .select('id, coach_id')
+    .eq('id', athleteId)
+    .maybeSingle()
+  assertOk(athErr, 'load athlete for connect')
+  if (!athlete) throw new Error('Athlete not found')
+  if (athlete.coach_id && athlete.coach_id !== coachId) {
+    throw new Error('Athlete is already connected to another coach — disconnect first')
+  }
+  if (athlete.coach_id === coachId) {
+    throw new Error('Already connected')
+  }
+
+  const { data: existing, error: exErr } = await supabase
+    .from('connection_requests')
+    .select('*')
+    .eq('athlete_id', athleteId)
+    .eq('coach_id', coachId)
+    .eq('status', 'pending')
+    .maybeSingle()
+  assertOk(exErr, 'check pending connection')
+  if (existing) return mapConnectionRequest(existing)
+
+  const { data, error } = await supabase
+    .from('connection_requests')
+    .insert({
+      athlete_id: athleteId,
+      coach_id: coachId,
+      initiated_by: initiatedBy,
+      status: 'pending',
+      transfer_history: Boolean(transferHistory),
+    })
+    .select('*')
+  assertOk(error, 'create connection request')
+  assertWrote(data, 'create connection request')
+  return mapConnectionRequest(data[0])
+}
+
+export async function respondConnectionRequest(requestId, decision) {
+  if (decision !== 'accepted' && decision !== 'declined') {
+    throw new Error('decision must be accepted or declined')
+  }
+  const { data: row, error: findErr } = await supabase
+    .from('connection_requests')
+    .select('*')
+    .eq('id', requestId)
+    .eq('status', 'pending')
+    .maybeSingle()
+  assertOk(findErr, 'load connection request')
+  if (!row) throw new Error('Request not found or already handled')
+
+  const { data, error } = await supabase
+    .from('connection_requests')
+    .update({
+      status: decision,
+      responded_at: new Date().toISOString(),
+    })
+    .eq('id', requestId)
+    .select('*')
+    .single()
+  assertOk(error, 'respond connection request')
+  return mapConnectionRequest(data)
+}
+
+export async function cancelConnectionRequest(requestId) {
+  const { data, error } = await supabase
+    .from('connection_requests')
+    .update({
+      status: 'cancelled',
+      responded_at: new Date().toISOString(),
+    })
+    .eq('id', requestId)
+    .eq('status', 'pending')
+    .select('*')
+    .single()
+  assertOk(error, 'cancel connection request')
+  return mapConnectionRequest(data)
 }
 
 export async function deleteAccount({ role, id }) {
