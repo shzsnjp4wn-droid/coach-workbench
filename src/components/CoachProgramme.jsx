@@ -423,7 +423,7 @@ export function CoachProgramme({
           <div style={{ width: weeks * WEEK_CELL_PX, minWidth: weeks * WEEK_CELL_PX }}>
             <div className="relative mb-2 grid gap-1" style={{ gridTemplateColumns: `repeat(${weeks}, ${WEEK_CELL_PX}px)` }}>
               {blocks.map((block, i) => (
-                <button key={block.id} type="button" onClick={() => selectBlock(block.id)} style={{ gridColumn: `span ${block.weeks}` }} className={`relative rounded-lg border px-3 py-2 text-left ${BLOCK_PALETTE[i % 4].surface} ${selectedBlockId === block.id ? 'ring-2 ring-cyan-400' : ''}`}>
+                <button key={block.id} type="button" onClick={() => selectBlock(block.id)} style={{ gridColumn: `span ${block.weeks}` }} className={`relative rounded-lg border px-3 py-2 text-left transition ${BLOCK_PALETTE[i % 4].surface} ${selectedBlockId === block.id ? 'ring-2 ring-cyan-400' : 'hover:ring-1 hover:ring-white/30'}`}>
                   <input value={block.name} onClick={(e) => e.stopPropagation()} onChange={(e) => patchClient((c) => ({ ...c, blocks: c.blocks.map((b) => (b.id === block.id ? { ...b, name: e.target.value } : b)) }))} className="w-full bg-transparent text-sm font-medium outline-none" />
                   <div className="text-[11px] text-zinc-400">{block.weeks} wk · click to plan</div>
                   {i < blocks.length - 1 && (
@@ -433,11 +433,31 @@ export function CoachProgramme({
               ))}
             </div>
             <div className="relative grid gap-1" style={{ gridTemplateColumns: `repeat(${weeks}, ${WEEK_CELL_PX}px)` }}>
-              {timeline.map((cell) => (
-                <div key={cell.week} className={`rounded-lg border bg-[#10131a] px-1.5 py-2 ${BLOCK_PALETTE[cell.blockIndex % 4].chip}`}>
-                  <div className="font-display text-sm text-white">Wk {cell.week}</div>
-                </div>
-              ))}
+              {timeline.map((cell) => {
+                const weekInBlock = (() => {
+                  let c = 0
+                  for (const b of blocks) {
+                    if (b.id === cell.block.id) return cell.week - c - 1
+                    c += b.weeks
+                  }
+                  return 0
+                })()
+                const selected = selectedBlockId === cell.block.id && selectedWeek === weekInBlock
+                return (
+                  <button
+                    key={cell.week}
+                    type="button"
+                    onClick={() => {
+                      selectBlock(cell.block.id)
+                      setSelectedWeek(weekInBlock)
+                      setStage('micro')
+                    }}
+                    className={`rounded-lg border bg-[#10131a] px-1.5 py-2 text-left transition ${BLOCK_PALETTE[cell.blockIndex % 4].chip} ${selected ? 'ring-2 ring-cyan-400' : 'hover:ring-1 hover:ring-white/30'}`}
+                  >
+                    <div className="font-display text-sm text-white">Wk {cell.week}</div>
+                  </button>
+                )
+              })}
               {timeline.slice(0, -1).map((cell, index) => {
                 const next = timeline[index + 1]
                 const split = cell.block.id !== next.block.id
@@ -489,7 +509,7 @@ export function CoachProgramme({
                             key={`${lift}-${rank}`}
                             type="button"
                             title={placed ? 'Click to return to bank' : 'Drag onto a day, or click then click a day'}
-                            draggable={!placed}
+                            draggable
                             onDragStart={(e) => e.dataTransfer.setData('text/plain', `${lift}:${rank}`)}
                             onClick={() => {
                               if (placed) unplaceChip(lift, rank)
@@ -508,7 +528,7 @@ export function CoachProgramme({
               <div className="overflow-x-auto">
                 <div className="flex min-w-max gap-3 pb-2">
                   {plan.weeks.map((wk, wi) => (
-                    <div key={wi} className={`rounded-xl border p-2 ${wi === selectedWeek ? 'border-cyan-400/60 bg-cyan-400/5' : 'border-white/8 opacity-45 hover:opacity-70'}`}>
+                    <div key={wi} className={`rounded-xl border p-2 transition ${wi === selectedWeek ? 'border-cyan-400/60 bg-cyan-400/5' : 'border-white/8 opacity-45 hover:border-white/25 hover:opacity-80'}`}>
                       <button type="button" onClick={() => setSelectedWeek(wi)} className="mb-2 font-display text-sm text-white">Week {wi + 1}</button>
                       <div className="flex gap-1">
                         {wk.days.map((d, di) => (
@@ -525,7 +545,7 @@ export function CoachProgramme({
                               else if (!d.active) toggleDay(wi, di)
                               else { setSelectedWeek(wi); setSelectedDay(di); setStage('day') }
                             }}
-                            className={`w-[108px] rounded-lg border p-1.5 ${d.active ? 'border-white/15 bg-[#10131a]' : 'border-dashed border-white/10 bg-transparent text-zinc-600'} ${highCns(d) ? 'border-orange-500/60' : ''}`}
+                            className={`w-[108px] rounded-lg border p-1.5 transition ${d.active ? 'border-white/15 bg-[#10131a]' : 'border-dashed border-white/10 bg-transparent text-zinc-600'} ${highCns(d) ? 'border-orange-500/60' : ''} ${wi === selectedWeek && di === selectedDay ? 'ring-2 ring-cyan-400/70' : 'hover:border-cyan-400/40'}`}
                           >
                             <div className="flex items-center justify-between">
                               <span className="text-[10px] uppercase tracking-wider">{WEEKDAYS[di].slice(0, 3)}</span>
@@ -537,13 +557,18 @@ export function CoachProgramme({
                                   <button
                                     key={m.id}
                                     type="button"
-                                    title="Click to return to bank"
+                                    title="Drag to another day, or click to return to bank"
+                                    draggable
+                                    onDragStart={(e) => {
+                                      e.stopPropagation()
+                                      e.dataTransfer.setData('text/plain', `${m.lift}:${m.rank}`)
+                                    }}
                                     onClick={(e) => {
                                       e.stopPropagation()
                                       setSelectedWeek(wi)
                                       unplaceChip(m.lift, m.rank, wi)
                                     }}
-                                    className={`rounded px-1 py-0.5 text-left text-[10px] ${LIFT_TONE[m.lift]}`}
+                                    className={`cursor-grab rounded px-1 py-0.5 text-left text-[10px] active:cursor-grabbing ${LIFT_TONE[m.lift]}`}
                                   >
                                     {RANK_LABEL[m.rank]} {LIFT_LABEL[m.lift]}
                                   </button>
@@ -590,13 +615,13 @@ export function CoachProgramme({
                       <button type="button" onClick={() => removeItem(selectedDay, item.id)} className="ml-auto text-zinc-500 hover:text-red-400"><Trash2 size={14} /></button>
                     </div>
                     {item.setGroups.map((g) => (
-                      <div key={g.id} className="mb-2 grid grid-cols-2 gap-2 rounded-lg border border-white/8 p-2 sm:grid-cols-8">
-                        <label className="col-span-2">
+                      <div key={g.id} className="mb-2 grid grid-cols-2 gap-2 rounded-lg border border-white/8 p-2 sm:grid-cols-6">
+                        <label className="col-span-2 sm:col-span-2">
                           <Label>Label</Label>
                           <input list="set-presets" value={g.label} onChange={(e) => updateGroup(item.id, g.id, { label: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm" />
                         </label>
                         {item.kind === 'main' && (
-                          <label className="col-span-2">
+                          <label className="col-span-2 sm:col-span-2">
                             <Label>Exercise</Label>
                             <select value={g.exercise} onChange={(e) => applyExerciseToGroup(item, g.id, e.target.value)} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm">
                               {client.liftLibrary[item.lift].map((v) => <option key={v.id} value={v.name}>{v.name} · {Math.round(v.modifier * 100)}%</option>)}
@@ -617,16 +642,18 @@ export function CoachProgramme({
                             {RPE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
                           </select>
                         </label>
-                        <label>
-                          <Label>Floor</Label>
-                          <input type="number" step="2.5" placeholder="—" value={g.floor} onChange={(e) => updateGroup(item.id, g.id, { floor: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm" />
-                        </label>
-                        <label>
-                          <Label>Cap</Label>
-                          <input type="number" step="2.5" placeholder="—" value={g.cap} onChange={(e) => updateGroup(item.id, g.id, { cap: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm" />
-                        </label>
+                        <div className="grid grid-rows-2 gap-1">
+                          <label>
+                            <Label>Floor</Label>
+                            <input type="number" step="2.5" placeholder="—" value={g.floor} onChange={(e) => updateGroup(item.id, g.id, { floor: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm" />
+                          </label>
+                          <label>
+                            <Label>Cap</Label>
+                            <input type="number" step="2.5" placeholder="—" value={g.cap} onChange={(e) => updateGroup(item.id, g.id, { cap: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm" />
+                          </label>
+                        </div>
                         {item.kind === 'main' && (
-                          <div className="col-span-2 text-[11px] text-zinc-500 sm:col-span-8">
+                          <div className="col-span-2 text-[11px] text-zinc-500 sm:col-span-6">
                             Chart ~ {fmtKg(loadFromChart(client.pbs[item.lift], g.reps, g.rpe, g.modifier))} kg ({(g.modifier * lookupPct(g.reps, g.rpe) * 100).toFixed(1)}% of {fmtKg(client.pbs[item.lift])} PB · {g.exercise} ×{g.modifier.toFixed(2)})
                             <button type="button" onClick={() => updateItem(selectedDay, item.id, { setGroups: item.setGroups.filter((x) => x.id !== g.id) })} className="ml-2 text-zinc-500 hover:text-red-400"><Trash2 size={12} className="inline" /></button>
                           </div>
