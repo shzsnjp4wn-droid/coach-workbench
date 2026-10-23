@@ -44,11 +44,94 @@ export const AVATAR = {
 export const COACH = {
   id: 'sam',
   name: 'Sam Okonkwo',
-  code: 'LIFT-SAM',
+  // Fallback only — seed + createCoachProfile mint a random CH-… code.
+  code: 'CH-PENDING',
 }
+
+/** Fixed pixel width per macro week so extending blocks scrolls instead of compressing. */
+export const WEEK_CELL_PX = 72
 
 const uid = () => Math.random().toString(36).slice(2, 9)
 export { uid }
+
+/** Unambiguous alphabet (no 0/O/1/I). 32^10 ≈ 1.1e15 bodies per prefix. */
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+export const USER_CODE_BODY_LEN = 10
+
+/** Cryptographically strong random body for ATH-/CH- codes (no DB check). */
+export function randomCodeBody(length = USER_CODE_BODY_LEN) {
+  const bytes = new Uint8Array(length)
+  if (typeof globalThis.crypto?.getRandomValues === 'function') {
+    globalThis.crypto.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < length; i += 1) bytes[i] = Math.floor(Math.random() * 256)
+  }
+  let out = ''
+  for (let i = 0; i < length; i += 1) {
+    out += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length]
+  }
+  return out
+}
+
+export function makeAthleteCode() {
+  return `ATH-${randomCodeBody()}`
+}
+
+export function makeCoachCode() {
+  return `CH-${randomCodeBody()}`
+}
+
+/** New athlete row for profile creation (no demo logs). Pass a DB-verified `code`. */
+export function createAthleteProfile({ name, code }) {
+  if (!code) throw new Error('createAthleteProfile requires a unique code from allocateUniqueUserCode')
+  const pbs = { squat: 0, bench: 0, deadlift: 0 }
+  const meet = isoFromDate(addDays(parseISO(todayISO()), 12 * 7))
+  return {
+    id: `ath_${uid()}`,
+    name: name.trim(),
+    code,
+    coachId: null,
+    event: '',
+    meetDate: meet,
+    planningMode: 'block',
+    blockWeeks: 12,
+    startDate: mondayOf(todayISO()),
+    pbs,
+    e1rm: { ...pbs },
+    accessoryLibrary: accessoryLibrary(),
+    liftLibrary: defaultLiftLibrary(),
+    blocks: [
+      { id: 'b1', name: 'Block 1', weeks: 4 },
+      { id: 'b2', name: 'Block 2', weeks: 4 },
+      { id: 'b3', name: 'Block 3', weeks: 4 },
+    ],
+    plans: {},
+    logs: [],
+    videos: [],
+    e1rmSeries: [],
+    scheduleOverrides: [],
+  }
+}
+
+/** Pass a DB-verified `code` from allocateUniqueUserCode. */
+export function createCoachProfile({ name, code }) {
+  if (!code) throw new Error('createCoachProfile requires a unique code from allocateUniqueUserCode')
+  return {
+    id: `ch_${uid()}`,
+    name: name.trim(),
+    code,
+  }
+}
+
+export function matchesUserQuery(person, raw) {
+  const q = raw.trim().toLowerCase()
+  if (!q) return true
+  return (
+    person.name.toLowerCase().includes(q)
+    || person.code.toLowerCase().includes(q)
+    || person.id.toLowerCase().includes(q)
+  )
+}
 
 export const clone = (v) => JSON.parse(JSON.stringify(v))
 
@@ -485,13 +568,15 @@ function makeAthlete(partial) {
 }
 
 export function createWorkspace() {
+  // Codes are random unique IDs (not derived from names — names can collide).
+  const coach = { ...COACH, code: makeCoachCode() }
   const ola = makeAthlete({
     id: 'ola',
     name: 'David Thomas',
-    code: 'ATH-' + uid(),
+    code: makeAthleteCode(),
     event: 'IPF Jr. Worlds',
     meetDate: '2027-01-07',
-    coachId: COACH.id,
+    coachId: coach.id,
     pbs: { squat: 200, bench: 130, deadlift: 265 },
     e1rm: { squat: 200, bench: 130, deadlift: 265 },
     blocks: [{ id: 'b1', name: 'Block 1', weeks: 4 }, { id: 'b2', name: 'Block 2', weeks: 4 }, { id: 'b3', name: 'Block 3', weeks: 3 }],
@@ -499,10 +584,10 @@ export function createWorkspace() {
   const marcus = makeAthlete({
     id: 'marcus',
     name: 'Marcus Chen',
-    code: 'ATH-' + uid(),
+    code: makeAthleteCode(),
     event: 'USAPL Nationals',
     meetDate: '2026-12-17',
-    coachId: COACH.id,
+    coachId: coach.id,
     pbs: { squat: 250, bench: 180, deadlift: 300 },
     e1rm: { squat: 250, bench: 180, deadlift: 300 },
     blocks: [{ id: 'b1', name: 'Block 1', weeks: 3 }, { id: 'b2', name: 'Block 2', weeks: 3 }, { id: 'b3', name: 'Block 3', weeks: 2 }],
@@ -510,7 +595,7 @@ export function createWorkspace() {
   const sofia = makeAthlete({
     id: 'sofia',
     name: 'Sofia Reyes',
-    code: 'ATH-' + uid(),
+    code: makeAthleteCode(),
     event: 'Off-season',
     meetDate: '2027-02-11',
     planningMode: 'block',
@@ -548,6 +633,7 @@ export function createWorkspace() {
   }
 
   return {
+    coach,
     athletes: { ola, marcus, sofia },
     messages,
   }

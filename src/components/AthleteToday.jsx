@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Dumbbell, Upload, Video } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Dumbbell, Upload, Video, X } from 'lucide-react'
 import {
   LIFT_TONE,
   RPE_OPTIONS,
@@ -19,6 +19,10 @@ import {
 } from '../domain'
 import { Card } from './ui'
 
+function isDurableUrl(url) {
+  return Boolean(url && !String(url).startsWith('blob:'))
+}
+
 export function AthleteToday({
   client,
   blocks,
@@ -33,9 +37,11 @@ export function AthleteToday({
   onSelectWeek,
   onSelectDay,
   onCommit,
+  onRemoveVideo,
 }) {
   const [drafts, setDrafts] = useState({})
   const [mismatch, setMismatch] = useState(null)
+  const [busyKey, setBusyKey] = useState(null)
   const logsRef = useRef(client.logs)
   const clientRef = useRef(client)
   const planRef = useRef(plan)
@@ -58,9 +64,9 @@ export function AthleteToday({
     for (const row of expanded) {
       const existing = findLog(logsRef.current, selectedBlockId, selectedWeek, selectedDay, row.setKey)
       next[row.setKey] = {
-        weight: existing ? String(existing.weight) : (row.prescribedKg ?? ''),
-        reps: existing ? String(existing.reps) : String(row.prescribedReps),
-        rpe: existing ? String(existing.rpe) : String(row.prescribedRpe),
+        weight: existing ? String(existing.weight) : '',
+        reps: existing ? String(existing.reps) : '',
+        rpe: existing ? String(existing.rpe) : '',
         media: null,
       }
     }
@@ -74,26 +80,31 @@ export function AthleteToday({
     onSelectWeek(next)
   }
 
-  function commitRow(row, shifted, date) {
+  async function commitRow(row, shifted, date) {
     const draft = drafts[row.setKey]
     const weight = Number(draft?.weight)
     const reps = Number(draft?.reps)
     const rpe = Number(draft?.rpe)
     if (!weight || !reps || !rpe) return
-    onCommit({
-      block: selectedBlock,
-      weekIndex: selectedWeek,
-      dayIndex: selectedDay,
-      row,
-      weight,
-      reps,
-      rpe,
-      shifted,
-      date,
-      media: draft.media,
-    })
-    setDrafts((d) => ({ ...d, [row.setKey]: { ...d[row.setKey], media: null } }))
-    setMismatch(null)
+    setBusyKey(row.setKey)
+    try {
+      await onCommit({
+        block: selectedBlock,
+        weekIndex: selectedWeek,
+        dayIndex: selectedDay,
+        row,
+        weight,
+        reps,
+        rpe,
+        shifted,
+        date,
+        media: draft.media,
+      })
+      setDrafts((d) => ({ ...d, [row.setKey]: { ...d[row.setKey], media: null } }))
+      setMismatch(null)
+    } finally {
+      setBusyKey(null)
+    }
   }
 
   function attempt(row) {
@@ -108,7 +119,7 @@ export function AthleteToday({
       })
       return
     }
-    commitRow(row, false, prescribed)
+    void commitRow(row, false, prescribed)
   }
 
   const weeksOut = selectedBlock && client.planningMode === 'meet'
@@ -180,12 +191,14 @@ export function AthleteToday({
           {rows.map((row) => {
             const existing = findLog(client.logs, selectedBlockId, selectedWeek, selectedDay, row.setKey)
             const draft = drafts[row.setKey] || {
-              weight: existing ? String(existing.weight) : (row.prescribedKg ?? ''),
-              reps: existing ? String(existing.reps) : String(row.prescribedReps),
-              rpe: existing ? String(existing.rpe) : String(row.prescribedRpe),
+              weight: existing ? String(existing.weight) : '',
+              reps: existing ? String(existing.reps) : '',
+              rpe: existing ? String(existing.rpe) : '',
               media: null,
             }
             const video = existing?.videoId ? client.videos.find((v) => v.id === existing.videoId) : null
+            const uploaded = isDurableUrl(video?.url)
+            const pendingClip = Boolean(draft.media)
             const caption = setCaption({
               setNumber: row.setNumber,
               reps: draft.reps || row.prescribedReps,
@@ -198,54 +211,118 @@ export function AthleteToday({
                   <div>
                     <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-500">Set {row.setNumber}{row.count > 1 ? ` · ${row.label} ${row.indexInGroup + 1}/${row.count}` : ''}</div>
                     <div className={`mt-1 inline-flex rounded-md border px-2 py-0.5 text-sm ${row.lift ? LIFT_TONE[row.lift] : 'border-white/10 bg-white/5 text-zinc-200'}`}>{row.exercise}</div>
-                    <div className="mt-1 text-sm text-zinc-400">
-                      {row.label} · prescribed {row.prescribedReps} @ RPE {row.prescribedRpe}
-                      {row.prescribedKg ? ` · ${fmtKg(row.prescribedKg)} kg` : ''}
-                      {(row.floor || row.cap) && <span className="ml-2 text-xs">{row.floor ? `floor ${row.floor}` : ''} {row.cap ? `cap ${row.cap}` : ''}</span>}
-                    </div>
                   </div>
                   {existing && <div className="rounded-full border border-lime-400/30 px-2 py-0.5 text-[10px] uppercase tracking-wider text-lime-300">Logged</div>}
                 </div>
-                <div className="mt-3 grid grid-cols-3 gap-2">
-                  <label>
-                    <span className="mb-1 block text-[10px] uppercase tracking-widest text-zinc-500">Kg</span>
-                    <input type="number" step="2.5" value={draft.weight} onChange={(e) => setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), weight: e.target.value } }))} className="w-full rounded-lg border border-white/10 bg-[#151821] px-3 py-2" />
-                  </label>
-                  <label>
-                    <span className="mb-1 block text-[10px] uppercase tracking-widest text-zinc-500">Reps</span>
-                    <input type="number" value={draft.reps} onChange={(e) => setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), reps: e.target.value } }))} className="w-full rounded-lg border border-white/10 bg-[#151821] px-3 py-2" />
-                  </label>
-                  <label>
-                    <span className="mb-1 block text-[10px] uppercase tracking-widest text-zinc-500">RPE</span>
-                    <select value={draft.rpe} onChange={(e) => setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), rpe: e.target.value } }))} className="w-full rounded-lg border border-white/10 bg-[#151821] px-3 py-2">
-                      {RPE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-                    </select>
-                  </label>
+
+                <div className="mt-3 rounded-lg border border-white/8 bg-black/25 px-3 py-2">
+                  <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-500">Prescribed</div>
+                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-mono text-sm text-zinc-200">
+                    <span>{row.prescribedReps} reps</span>
+                    <span>RPE {row.prescribedRpe}</span>
+                    {row.prescribedKg != null && <span>{fmtKg(row.prescribedKg)} kg</span>}
+                    {(row.floor || row.cap) && (
+                      <span className="text-zinc-500">
+                        {row.floor ? `floor ${row.floor}` : ''}
+                        {row.floor && row.cap ? ' · ' : ''}
+                        {row.cap ? `cap ${row.cap}` : ''}
+                      </span>
+                    )}
+                  </div>
                 </div>
+
+                <div className="mt-3">
+                  <div className="mb-1 text-[10px] uppercase tracking-[0.16em] text-zinc-500">What you did</div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <label>
+                      <span className="mb-1 block text-[10px] uppercase tracking-widest text-zinc-500">Kg</span>
+                      <input type="number" step="2.5" value={draft.weight} placeholder={row.prescribedKg != null ? String(row.prescribedKg) : ''} onChange={(e) => setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), weight: e.target.value } }))} className="w-full rounded-lg border border-white/10 bg-[#151821] px-3 py-2" />
+                    </label>
+                    <label>
+                      <span className="mb-1 block text-[10px] uppercase tracking-widest text-zinc-500">Reps</span>
+                      <input type="number" value={draft.reps} placeholder={String(row.prescribedReps)} onChange={(e) => setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), reps: e.target.value } }))} className="w-full rounded-lg border border-white/10 bg-[#151821] px-3 py-2" />
+                    </label>
+                    <label>
+                      <span className="mb-1 block text-[10px] uppercase tracking-widest text-zinc-500">RPE</span>
+                      <select value={draft.rpe} onChange={(e) => setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), rpe: e.target.value } }))} className="w-full rounded-lg border border-white/10 bg-[#151821] px-3 py-2">
+                        <option value="">—</option>
+                        {RPE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-white/15 px-3 py-2 text-sm">
-                    {draft.media || video?.url ? <Video size={14} /> : <Upload size={14} />}
-                    {draft.media ? draft.media.name : video?.url ? 'Replace clip' : 'Add clip'}
-                    <input
-                      type="file"
-                      accept="video/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0]
-                        e.target.value = ''
-                        if (!file) return
-                        setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), media: fileToMedia(file) } }))
-                      }}
-                    />
-                  </label>
-                  <button type="button" onClick={() => attempt(row)} className="rounded-lg bg-lime-400 px-4 py-2 text-sm font-semibold text-black">
-                    {existing ? 'Update set' : 'Log set'}
+                  {pendingClip ? (
+                    <div className="inline-flex items-center gap-2 rounded-lg border border-lime-400/40 bg-lime-400/10 px-3 py-2 text-sm text-lime-100">
+                      <Video size={14} />
+                      <span className="max-w-[160px] truncate">{draft.media.name}</span>
+                      <span className="text-[10px] uppercase tracking-wider text-lime-300/80">Ready</span>
+                      <button
+                        type="button"
+                        aria-label="Remove clip"
+                        onClick={() => setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), media: null } }))}
+                        className="rounded border border-white/10 p-0.5 text-zinc-400 hover:text-white"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ) : uploaded ? (
+                    <div className="inline-flex items-center gap-2 rounded-lg border border-lime-400/40 bg-lime-400/10 px-3 py-2 text-sm text-lime-100">
+                      <Check size={14} />
+                      <span>Clip uploaded</span>
+                      <button
+                        type="button"
+                        aria-label="Remove uploaded clip"
+                        onClick={() => onRemoveVideo?.({ log: existing, video })}
+                        className="rounded border border-white/10 p-0.5 text-zinc-400 hover:text-white"
+                      >
+                        <X size={12} />
+                      </button>
+                      <label className="cursor-pointer text-[10px] uppercase tracking-wider text-zinc-400 hover:text-white">
+                        Replace
+                        <input
+                          type="file"
+                          accept="video/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0]
+                            e.target.value = ''
+                            if (!file) return
+                            setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), media: fileToMedia(file) } }))
+                          }}
+                        />
+                      </label>
+                    </div>
+                  ) : (
+                    <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-white/15 px-3 py-2 text-sm">
+                      <Upload size={14} />
+                      Add clip
+                      <input
+                        type="file"
+                        accept="video/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0]
+                          e.target.value = ''
+                          if (!file) return
+                          setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), media: fileToMedia(file) } }))
+                        }}
+                      />
+                    </label>
+                  )}
+                  <button
+                    type="button"
+                    disabled={busyKey === row.setKey}
+                    onClick={() => attempt(row)}
+                    className="rounded-lg bg-lime-400 px-4 py-2 text-sm font-semibold text-black disabled:opacity-60"
+                  >
+                    {busyKey === row.setKey ? 'Saving…' : existing ? 'Update set' : 'Log set'}
                   </button>
                 </div>
                 <div className="mt-3 rounded-lg border border-white/8 bg-black/30 px-3 py-2">
                   <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-500">Video caption</div>
                   <div className="font-display text-xl text-white">{caption}</div>
-                  {video && !draft.media && <div className="mt-1 text-[11px] text-zinc-500">{video.url ? 'Clip is in Videos.' : 'Caption is in Videos. Add a clip to attach the file.'}</div>}
                 </div>
               </Card>
             )
@@ -261,8 +338,8 @@ export function AthleteToday({
               This session was prescribed for {mismatch.prescribedWeekday}. Today is {mismatch.actualWeekday}. Confirming tags the mesocycle for you and your coach.
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
-              <button type="button" onClick={() => commitRow(mismatch.row, true, todayISO())} className="rounded-lg bg-lime-400 px-4 py-2 text-sm font-semibold text-black">Yes, I did it today</button>
-              <button type="button" onClick={() => commitRow(mismatch.row, false, mismatch.prescribedISO)} className="rounded-lg border border-white/15 px-4 py-2 text-sm">No, log against prescribed day</button>
+              <button type="button" onClick={() => void commitRow(mismatch.row, true, todayISO())} className="rounded-lg bg-lime-400 px-4 py-2 text-sm font-semibold text-black">Yes, I did it today</button>
+              <button type="button" onClick={() => void commitRow(mismatch.row, false, mismatch.prescribedISO)} className="rounded-lg border border-white/15 px-4 py-2 text-sm">No, log against prescribed day</button>
               <button type="button" onClick={() => setMismatch(null)} className="px-3 text-sm text-zinc-500">Cancel</button>
             </div>
           </div>

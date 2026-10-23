@@ -19,6 +19,7 @@ import {
   RANK_LABEL,
   RPE_OPTIONS,
   SET_PRESETS,
+  WEEK_CELL_PX,
   WEEKDAYS,
   dayItems,
   dayTitle,
@@ -119,8 +120,8 @@ export function CoachProgramme({
   }
   function onResizeMove(e) {
     const drag = dragRef.current
-    if (!drag || !trackRef.current) return
-    const cell = trackRef.current.getBoundingClientRect().width / weeks
+    if (!drag) return
+    const cell = WEEK_CELL_PX
     const delta = Math.round((e.clientX - drag.startX) / cell)
     const left = Math.max(1, drag.start[drag.index] + delta)
     const right = Math.max(1, drag.start[drag.index + 1] - delta)
@@ -193,6 +194,23 @@ export function CoachProgramme({
     })
     setSelectedWeek(weekIndex)
     setSelectedDay(dayIndex)
+    setPaletteChip(null)
+  }
+
+  /** Return a placed 1°/2°/… chip from the week back to the frequency bank. */
+  function unplaceChip(lift, rank, weekIndex = selectedWeek) {
+    patchPlan((p) => ({
+      ...p,
+      weeks: p.weeks.map((w, wi) => {
+        if (!p.sameEveryWeek && wi !== weekIndex) return w
+        return {
+          days: w.days.map((d) => ({
+            ...d,
+            items: dayItems(d).filter((it) => !(it.kind === 'main' && it.lift === lift && it.rank === rank)),
+          })),
+        }
+      }),
+    }))
     setPaletteChip(null)
   }
 
@@ -381,15 +399,29 @@ export function CoachProgramme({
             <label key={lift} className="rounded-lg border border-white/8 bg-black/30 px-2 py-1">
               <div className="text-[9px] uppercase tracking-widest text-zinc-500">{lift} PB</div>
               <div className="flex items-baseline gap-2">
-                <input type="number" step="2.5" value={client.pbs[lift]} onChange={(e) => patchClient((c) => ({ ...c, pbs: { ...c.pbs, [lift]: Number(e.target.value) } }))} className="w-16 bg-transparent font-display text-xl outline-none" />
+                <input
+                  type="number"
+                  step="2.5"
+                  value={client.pbs[lift]}
+                  onChange={(e) => {
+                    const value = Number(e.target.value)
+                    patchClient((c) => ({
+                      ...c,
+                      pbs: { ...c.pbs, [lift]: value },
+                      // Keep the working max in step with the PB the coach just typed.
+                      e1rm: { ...c.e1rm, [lift]: value },
+                    }))
+                  }}
+                  className="w-16 bg-transparent font-display text-xl outline-none"
+                />
                 <span className="font-mono text-[10px] text-lime-300/80">e1 {fmtKg(client.e1rm[lift])}</span>
               </div>
             </label>
           ))}
         </div>
         <div className="overflow-x-auto" ref={trackRef}>
-          <div className="min-w-[860px]">
-            <div className="relative mb-2 grid gap-1" style={{ gridTemplateColumns: `repeat(${weeks}, minmax(0,1fr))` }}>
+          <div style={{ width: weeks * WEEK_CELL_PX, minWidth: weeks * WEEK_CELL_PX }}>
+            <div className="relative mb-2 grid gap-1" style={{ gridTemplateColumns: `repeat(${weeks}, ${WEEK_CELL_PX}px)` }}>
               {blocks.map((block, i) => (
                 <button key={block.id} type="button" onClick={() => selectBlock(block.id)} style={{ gridColumn: `span ${block.weeks}` }} className={`relative rounded-lg border px-3 py-2 text-left ${BLOCK_PALETTE[i % 4].surface} ${selectedBlockId === block.id ? 'ring-2 ring-cyan-400' : ''}`}>
                   <input value={block.name} onClick={(e) => e.stopPropagation()} onChange={(e) => patchClient((c) => ({ ...c, blocks: c.blocks.map((b) => (b.id === block.id ? { ...b, name: e.target.value } : b)) }))} className="w-full bg-transparent text-sm font-medium outline-none" />
@@ -400,7 +432,7 @@ export function CoachProgramme({
                 </button>
               ))}
             </div>
-            <div className="relative grid gap-1" style={{ gridTemplateColumns: `repeat(${weeks}, minmax(0,1fr))` }}>
+            <div className="relative grid gap-1" style={{ gridTemplateColumns: `repeat(${weeks}, ${WEEK_CELL_PX}px)` }}>
               {timeline.map((cell) => (
                 <div key={cell.week} className={`rounded-lg border bg-[#10131a] px-1.5 py-2 ${BLOCK_PALETTE[cell.blockIndex % 4].chip}`}>
                   <div className="font-display text-sm text-white">Wk {cell.week}</div>
@@ -410,7 +442,7 @@ export function CoachProgramme({
                 const next = timeline[index + 1]
                 const split = cell.block.id !== next.block.id
                 return (
-                  <button key={`e${cell.week}`} type="button" onClick={() => (split ? mergeAfter(cell.week) : splitAfter(cell.week))} style={{ left: `${((index + 1) / weeks) * 100}%` }} className="absolute top-1/2 z-10 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/15 bg-[#0e1016] text-zinc-400">
+                  <button key={`e${cell.week}`} type="button" onClick={() => (split ? mergeAfter(cell.week) : splitAfter(cell.week))} style={{ left: (index + 1) * WEEK_CELL_PX }} className="absolute top-1/2 z-10 flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/15 bg-[#0e1016] text-zinc-400">
                     {split ? <Link2 size={10} /> : <Scissors size={10} />}
                   </button>
                 )
@@ -456,12 +488,16 @@ export function CoachProgramme({
                           <button
                             key={`${lift}-${rank}`}
                             type="button"
+                            title={placed ? 'Click to return to bank' : 'Drag onto a day, or click then click a day'}
                             draggable={!placed}
                             onDragStart={(e) => e.dataTransfer.setData('text/plain', `${lift}:${rank}`)}
-                            onClick={() => setPaletteChip(placed ? null : { lift, rank })}
-                            className={`rounded-md border px-2 py-1 text-xs ${LIFT_TONE[lift]} ${placed ? 'opacity-35' : ''} ${paletteChip?.lift === lift && paletteChip?.rank === rank ? 'ring-2 ring-white' : ''}`}
+                            onClick={() => {
+                              if (placed) unplaceChip(lift, rank)
+                              else setPaletteChip({ lift, rank })
+                            }}
+                            className={`rounded-md border px-2 py-1 text-xs ${LIFT_TONE[lift]} ${placed ? 'opacity-45 ring-1 ring-white/20' : ''} ${paletteChip?.lift === lift && paletteChip?.rank === rank ? 'ring-2 ring-white' : ''}`}
                           >
-                            {RANK_LABEL[rank]} {LIFT_LABEL[lift]}
+                            {RANK_LABEL[rank]} {LIFT_LABEL[lift]}{placed ? ' · undo' : ''}
                           </button>
                         )
                       })}
@@ -498,7 +534,19 @@ export function CoachProgramme({
                             {d.active ? (
                               <div className="mt-1 grid gap-1">
                                 {dayItems(d).filter((i) => i.kind === 'main').map((m) => (
-                                  <div key={m.id} className={`rounded px-1 py-0.5 text-[10px] ${LIFT_TONE[m.lift]}`}>{RANK_LABEL[m.rank]} {LIFT_LABEL[m.lift]}</div>
+                                  <button
+                                    key={m.id}
+                                    type="button"
+                                    title="Click to return to bank"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setSelectedWeek(wi)
+                                      unplaceChip(m.lift, m.rank, wi)
+                                    }}
+                                    className={`rounded px-1 py-0.5 text-left text-[10px] ${LIFT_TONE[m.lift]}`}
+                                  >
+                                    {RANK_LABEL[m.rank]} {LIFT_LABEL[m.lift]}
+                                  </button>
                                 ))}
                                 {dayItems(d).filter((i) => i.kind === 'main').length === 0 && <div className="py-4 text-center text-[10px] text-zinc-600">Drop</div>}
                               </div>

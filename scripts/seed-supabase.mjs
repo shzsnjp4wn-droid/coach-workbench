@@ -46,13 +46,39 @@ if (!url || !serviceKey) {
   process.exit(1)
 }
 
-const { createWorkspace, COACH } = await import(pathToFileURL(resolve(root, 'src/domain.js')).href)
-const workspace = createWorkspace()
-const athletes = Object.values(workspace.athletes)
+const { createWorkspace, makeAthleteCode, makeCoachCode } = await import(
+  pathToFileURL(resolve(root, 'src/domain.js')).href
+)
 
 const supabase = createClient(url, serviceKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
+
+/** Same generate → check DB → retry loop the app uses (plus a local set for this batch). */
+async function allocateUniqueCode(kind, taken) {
+  const table = kind === 'coach' ? 'coaches' : 'athletes'
+  const mint = kind === 'coach' ? makeCoachCode : makeAthleteCode
+  for (let attempt = 1; attempt <= 16; attempt += 1) {
+    const code = mint()
+    if (taken.has(code)) continue
+    const { data, error } = await supabase.from(table).select('id').eq('code', code).maybeSingle()
+    if (error) {
+      console.error(`✗ check ${kind} code`, error)
+      process.exit(1)
+    }
+    if (!data) {
+      taken.add(code)
+      return code
+    }
+    console.warn(`  collision on ${code}, retrying…`)
+  }
+  console.error(`✗ could not allocate unique ${kind} code`)
+  process.exit(1)
+}
+
+let workspace
+let coach
+let athletes
 
 function assertOk(label, error) {
   if (error) {
@@ -90,13 +116,22 @@ async function wipe() {
 }
 
 async function seed() {
+  workspace = createWorkspace()
+  const takenCodes = new Set()
+  workspace.coach.code = await allocateUniqueCode('coach', takenCodes)
+  for (const athlete of Object.values(workspace.athletes)) {
+    athlete.code = await allocateUniqueCode('athlete', takenCodes)
+  }
+  coach = workspace.coach
+  athletes = Object.values(workspace.athletes)
+
   {
     const { error } = await supabase.from('coaches').upsert({
-      id: COACH.id,
-      name: COACH.name,
-      code: COACH.code,
+      id: coach.id,
+      name: coach.name,
+      code: coach.code,
     })
-    assertOk('coaches', error)
+    assertOk(`coaches (${coach.code})`, error)
   }
 
   const athleteRows = athletes.map((a) => ({
@@ -286,7 +321,8 @@ async function seed() {
     console.log('✓ messages (0)')
   }
 
-  console.log('\nSeeded athletes:')
+  console.log('\nSeeded profiles (codes are random + unique — find people by name or paste the code):')
+  console.log(`  - coach ${coach.name} (${coach.id}) code=${coach.code}`)
   for (const a of athletes) {
     console.log(`  - ${a.name} (${a.id}) code=${a.code} coach=${a.coachId || 'none'} blocks=${a.blocks.length} logs=${a.logs.length} videos=${a.videos.length}`)
   }
@@ -296,4 +332,4 @@ console.log('Seeding Supabase from createWorkspace() …')
 console.log(`URL: ${url}`)
 await wipe()
 await seed()
-console.log('\nDone. React UI still uses in-memory mock data until the next step.')
+console.log('\nDone. Open the app and search the directory by name, or use the codes printed above.')
