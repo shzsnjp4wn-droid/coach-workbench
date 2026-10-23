@@ -44,6 +44,8 @@ export function ProfileGate({
   onSelect,
 }) {
   const [name, setName] = useState('')
+  const [sex, setSex] = useState('male')
+  const [bodyweightKg, setBodyweightKg] = useState('83')
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
   const accent = role === 'coach' ? 'cyan' : 'lime'
@@ -65,7 +67,11 @@ export function ProfileGate({
     if (!name.trim() || busy) return
     setBusy(true)
     try {
-      await onCreate(name.trim())
+      await onCreate({
+        name: name.trim(),
+        sex,
+        bodyweightKg: Number(bodyweightKg) || undefined,
+      })
     } finally {
       setBusy(false)
     }
@@ -101,6 +107,28 @@ export function ProfileGate({
                 className="rounded-lg border border-white/10 bg-[#151821] px-3 py-3 text-lg"
                 autoFocus
               />
+              {role === 'athlete' && (
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="grid gap-1 text-xs">
+                    <span className="uppercase tracking-widest text-zinc-500">Sex</span>
+                    <select value={sex} onChange={(e) => setSex(e.target.value)} className="rounded-lg border border-white/10 bg-[#151821] px-3 py-2 text-sm">
+                      <option value="male">Male</option>
+                      <option value="female">Female</option>
+                    </select>
+                  </label>
+                  <label className="grid gap-1 text-xs">
+                    <span className="uppercase tracking-widest text-zinc-500">Bodyweight (kg)</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="30"
+                      value={bodyweightKg}
+                      onChange={(e) => setBodyweightKg(e.target.value)}
+                      className="rounded-lg border border-white/10 bg-[#151821] px-3 py-2 text-sm"
+                    />
+                  </label>
+                </div>
+              )}
               <button
                 type="submit"
                 disabled={!name.trim() || busy}
@@ -162,12 +190,14 @@ export function ConnectGate({
   coach,
   selfAthlete,
   onConnectCoach,
+  onDisconnect,
   onOpen,
   onBack,
   onCopy,
   onSearchConnect,
 }) {
   const [query, setQuery] = useState('')
+  const [transferHistory, setTransferHistory] = useState(true)
   const list = Object.values(athletes)
   const connected = list.filter((a) => a.coachId === coach?.id)
   const directoryHits = useMemo(() => {
@@ -281,8 +311,9 @@ export function ConnectGate({
                       {person.kind === 'coach' ? (
                         <button
                           type="button"
-                          onClick={() => onConnectCoach(person.id)}
-                          className="rounded-md bg-lime-400 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-black"
+                          disabled={Boolean(selfAthlete.coachId)}
+                          onClick={() => onConnectCoach(person.id, { transferHistory })}
+                          className="rounded-md bg-lime-400 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-black disabled:opacity-40"
                         >
                           Connect
                         </button>
@@ -303,9 +334,23 @@ export function ConnectGate({
                     Connected to {coaches.find((c) => c.id === selfAthlete.coachId)?.name || 'your coach'}.
                   </p>
                   <button type="button" onClick={() => onOpen(selfAthlete.id)} className="mt-4 w-full rounded-lg bg-lime-400 py-2 text-sm font-semibold text-black">Open programme</button>
+                  <button
+                    type="button"
+                    onClick={() => onDisconnect?.()}
+                    className="mt-2 w-full rounded-lg border border-orange-400/40 py-2 text-sm text-orange-200"
+                  >
+                    Disconnect from current coach
+                  </button>
+                  <p className="mt-2 text-[11px] text-zinc-500">You must disconnect before connecting to a different coach.</p>
                 </>
               ) : (
-                <p className="text-sm text-zinc-400">No coach yet. Find them by name or CH- code, then open your programme.</p>
+                <>
+                  <p className="text-sm text-zinc-400">No coach yet. Find them by name or CH- code below.</p>
+                  <label className="mt-3 flex items-start gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-zinc-300">
+                    <input type="checkbox" checked={transferHistory} onChange={(e) => setTransferHistory(e.target.checked)} className="mt-0.5" />
+                    <span>Transfer past programme blocks, logs, and PB history to the new coach</span>
+                  </label>
+                </>
               )}
               {selfAthlete.coachId && (
                 <div className="mt-4 text-xs text-zinc-500">

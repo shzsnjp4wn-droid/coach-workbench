@@ -3,6 +3,9 @@ import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, X
 import {
   LIFT_LABEL,
   LIFT_STROKE,
+  calculateDots,
+  currentGl,
+  estimatedTotalKg,
   fmtKg,
   formatShortDay,
   latestEstimates,
@@ -22,7 +25,12 @@ function Tip({ active, payload, label }) {
   )
 }
 
-export function ProgressPage({ athlete, viewer }) {
+function fmtGl(n) {
+  if (n == null || Number.isNaN(Number(n))) return '—'
+  return Number(n).toFixed(1)
+}
+
+export function ProgressPage({ athlete, viewer, stint, roster, onBodyweight }) {
   const [focus, setFocus] = useState('all')
   const estimates = latestEstimates(athlete)
   const series = athlete.e1rmSeries || []
@@ -30,14 +38,102 @@ export function ProgressPage({ athlete, viewer }) {
   const first = series[0]
   const lifts = focus === 'all' ? ['squat', 'bench', 'deadlift'] : [focus]
   const logs = [...(athlete.logs || [])].sort((a, b) => b.date.localeCompare(a.date) || (b.setNumber || 0) - (a.setNumber || 0)).slice(0, 12)
+  const totalNow = estimatedTotalKg(athlete)
+  const glNow = currentGl(athlete)
+  const startGl = stint?.startDots ?? null
+  const startTotal = stint?.startTotalKg ?? null
+  const glDelta = glNow != null && startGl != null ? glNow - startGl : null
+
+  const rosterStats = (roster || []).map((person) => {
+    const active = person.activeStint
+    const now = currentGl(person)
+    const start = active?.startDots
+    return {
+      id: person.id,
+      name: person.name,
+      startGl: start,
+      nowGl: now,
+      delta: now != null && start != null ? now - start : null,
+    }
+  })
+  const rosterDeltas = rosterStats.map((r) => r.delta).filter((d) => d != null)
+  const avgDelta = rosterDeltas.length
+    ? rosterDeltas.reduce((s, d) => s + d, 0) / rosterDeltas.length
+    : null
 
   return (
     <div className="grid gap-4">
-      <div>
-        <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">{viewer === 'coach' ? athlete.name : 'Your lifting'}</div>
-        <h1 className="font-display text-4xl text-white">e1RM over time</h1>
-        <p className="text-sm text-zinc-500">Estimated from logged reps, load, and RPE. A day keeps the best estimate for each lift.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">{viewer === 'coach' ? athlete.name : 'Your lifting'}</div>
+          <h1 className="font-display text-4xl text-white">e1RM & GL</h1>
+          <p className="text-sm text-zinc-500">Estimated from logged sets. GL uses the IPF classic formula (shown as DOTS in-product).</p>
+        </div>
+        <label className="text-sm">
+          <div className="text-[10px] uppercase tracking-widest text-zinc-500">Bodyweight (kg)</div>
+          <input
+            type="number"
+            step="0.1"
+            min="30"
+            value={athlete.bodyweightKg ?? ''}
+            onChange={(e) => onBodyweight?.(e.target.value)}
+            className="w-24 rounded-md border border-white/10 bg-[#151821] px-2 py-1 font-mono"
+          />
+        </label>
       </div>
+
+      {(stint || viewer === 'coach') && (
+        <div className="grid gap-2 sm:grid-cols-4">
+          <Card className="p-3">
+            <div className="text-[10px] uppercase tracking-widest text-zinc-500">Start total</div>
+            <div className="font-display text-3xl text-white">{fmtKg(startTotal)}<span className="ml-1 text-lg text-zinc-500">kg</span></div>
+            <div className="font-mono text-[11px] text-zinc-500">{stint?.startedAt ? formatShortDay(stint.startedAt.slice(0, 10)) : '—'}</div>
+          </Card>
+          <Card className="p-3">
+            <div className="text-[10px] uppercase tracking-widest text-zinc-500">Start GL</div>
+            <div className="font-display text-3xl text-white">{fmtGl(startGl)}</div>
+          </Card>
+          <Card className="p-3">
+            <div className="text-[10px] uppercase tracking-widest text-zinc-500">Current GL</div>
+            <div className="font-display text-3xl text-white">{fmtGl(glNow)}</div>
+            <div className="font-mono text-[11px] text-zinc-500">Total {fmtKg(totalNow)} kg</div>
+          </Card>
+          <Card className="p-3">
+            <div className="text-[10px] uppercase tracking-widest text-zinc-500">Under this coach</div>
+            <div className={`font-display text-3xl ${glDelta == null ? 'text-zinc-500' : glDelta >= 0 ? 'text-lime-300' : 'text-orange-300'}`}>
+              {glDelta == null ? '—' : `${glDelta >= 0 ? '+' : ''}${fmtGl(glDelta)}`}
+            </div>
+            <div className="font-mono text-[11px] text-zinc-500">GL delta</div>
+          </Card>
+        </div>
+      )}
+
+      {viewer === 'coach' && rosterStats.length > 0 && (
+        <Card className="p-4">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <div className="text-[10px] uppercase tracking-widest text-zinc-500">Roster GL trend</div>
+              <div className="font-display text-2xl text-white">
+                Avg {avgDelta == null ? '—' : `${avgDelta >= 0 ? '+' : ''}${fmtGl(avgDelta)} GL`}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-1">
+            {rosterStats.map((row) => (
+              <div key={row.id} className="flex items-center justify-between rounded-lg border border-white/8 px-3 py-2 text-sm">
+                <span className="text-zinc-200">{row.name}</span>
+                <span className="font-mono text-xs text-zinc-500">
+                  {fmtGl(row.startGl)} → {fmtGl(row.nowGl)}
+                  <span className={`ml-2 ${row.delta == null ? '' : row.delta >= 0 ? 'text-lime-300' : 'text-orange-300'}`}>
+                    {row.delta == null ? '' : `${row.delta >= 0 ? '+' : ''}${fmtGl(row.delta)}`}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
       <div className="grid gap-2 sm:grid-cols-4">
         {['squat', 'bench', 'deadlift'].map((lift) => {
           const delta = first && estimates[lift] != null ? Number(estimates[lift]) - Number(first[lift]) : null
@@ -56,7 +152,9 @@ export function ProgressPage({ athlete, viewer }) {
         <Card className="p-3">
           <div className="text-[10px] uppercase tracking-widest text-zinc-500">Total</div>
           <div className="font-display text-4xl text-white">{fmtKg(totalOf(estimates))}<span className="ml-1 text-lg text-zinc-500">kg</span></div>
-          <div className="font-mono text-xs text-zinc-500">Squat + bench + deadlift</div>
+          <div className="font-mono text-xs text-zinc-500">
+            GL {fmtGl(calculateDots(totalOf(estimates), athlete.bodyweightKg, athlete.sex))}
+          </div>
         </Card>
       </div>
       <Card className="p-4">

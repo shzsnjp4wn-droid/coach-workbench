@@ -82,15 +82,19 @@ export function makeCoachCode() {
 }
 
 /** New athlete row for profile creation (no demo logs). Pass a DB-verified `code`. */
-export function createAthleteProfile({ name, code }) {
+export function createAthleteProfile({ name, code, sex = 'male', bodyweightKg = 83 }) {
   if (!code) throw new Error('createAthleteProfile requires a unique code from allocateUniqueUserCode')
   const pbs = { squat: 0, bench: 0, deadlift: 0 }
   const meet = isoFromDate(addDays(parseISO(todayISO()), 12 * 7))
+  const sexNorm = sex === 'female' || sex === 'f' || sex === 'F' ? 'female' : 'male'
+  const bw = Number(bodyweightKg)
   return {
     id: `ath_${uid()}`,
     name: name.trim(),
     code,
     coachId: null,
+    sex: sexNorm,
+    bodyweightKg: Number.isFinite(bw) && bw > 0 ? bw : (sexNorm === 'female' ? 63 : 83),
     event: '',
     meetDate: meet,
     planningMode: 'block',
@@ -131,6 +135,65 @@ export function matchesUserQuery(person, raw) {
     || person.code.toLowerCase().includes(q)
     || person.id.toLowerCase().includes(q)
   )
+}
+
+/** IPF GL (Goodlift) classic full-power coefficients — function name kept as calculateDots per product API. */
+export const IPF_GL_CLASSIC = {
+  male: { A: 1199.72839, B: 1025.18162, C: 0.00921 },
+  female: { A: 610.32796, B: 1045.59282, C: 0.03048 },
+}
+
+/**
+ * IPF GL Points = total×100 / (A − B·e^(−C·bodyweight)).
+ * Named calculateDots for the product surface; returns GL points (not Wilks/DOTS).
+ */
+export function calculateDots(totalKg, bodyweightKg, sex = 'male') {
+  const key = sex === 'female' || sex === 'f' || sex === 'F' ? 'female' : 'male'
+  const { A, B, C } = IPF_GL_CLASSIC[key]
+  const total = Number(totalKg)
+  const bw = Number(bodyweightKg)
+  if (!Number.isFinite(total) || total <= 0) return null
+  if (!Number.isFinite(bw) || bw <= 0) return null
+  const denom = A - B * Math.exp(-C * bw)
+  if (!Number.isFinite(denom) || denom <= 0) return null
+  return Math.round(((total * 100) / denom) * 100) / 100
+}
+
+export function estimatedTotalKg(athlete) {
+  return totalOf(latestEstimates(athlete))
+}
+
+export function currentGl(athlete) {
+  return calculateDots(estimatedTotalKg(athlete), athlete.bodyweightKg, athlete.sex || 'male')
+}
+
+/** Scope athlete unit data for a coach viewer based on active stint.transferHistory. */
+export function scopeAthleteForCoach(athlete, coachId, stint) {
+  if (!athlete || !coachId) return athlete
+  const transfer = Boolean(stint?.transferHistory)
+  if (transfer) return athlete
+  const own = (row) => !row.coachId || row.coachId === coachId
+  const blocks = (athlete.blocks || []).filter(own)
+  const blockIds = new Set(blocks.map((b) => b.id))
+  const plans = {}
+  for (const [key, plan] of Object.entries(athlete.plans || {})) {
+    if (blockIds.has(key) && (!plan.coachId || plan.coachId === coachId)) plans[key] = plan
+  }
+  return {
+    ...athlete,
+    blocks,
+    plans,
+    logs: (athlete.logs || []).filter(own),
+    videos: (athlete.videos || []).filter(own),
+    e1rmSeries: (athlete.e1rmSeries || []).filter(own),
+    scheduleOverrides: (athlete.scheduleOverrides || []).filter(own),
+  }
+}
+
+export function messagesForPair(messagesByAthlete, athleteId, coachId) {
+  const thread = messagesByAthlete?.[athleteId] || []
+  if (!coachId) return thread
+  return thread.filter((m) => !m.coachId || m.coachId === coachId)
 }
 
 export const clone = (v) => JSON.parse(JSON.stringify(v))
@@ -223,6 +286,7 @@ export function fileToMedia(file) {
     type: file.type || 'application/octet-stream',
     size: file.size,
     kind,
+    file,
   }
 }
 export function atDaysAgo(days, hours, minutes) {
@@ -574,28 +638,34 @@ export function createWorkspace() {
     id: 'ola',
     name: 'David Thomas',
     code: makeAthleteCode(),
+    sex: 'male',
+    bodyweightKg: 82.5,
     event: 'IPF Jr. Worlds',
     meetDate: '2027-01-07',
     coachId: coach.id,
     pbs: { squat: 200, bench: 130, deadlift: 265 },
     e1rm: { squat: 200, bench: 130, deadlift: 265 },
-    blocks: [{ id: 'b1', name: 'Block 1', weeks: 4 }, { id: 'b2', name: 'Block 2', weeks: 4 }, { id: 'b3', name: 'Block 3', weeks: 3 }],
+    blocks: [{ id: 'b1', name: 'Block 1', weeks: 4, coachId: coach.id }, { id: 'b2', name: 'Block 2', weeks: 4, coachId: coach.id }, { id: 'b3', name: 'Block 3', weeks: 3, coachId: coach.id }],
   })
   const marcus = makeAthlete({
     id: 'marcus',
     name: 'Marcus Chen',
     code: makeAthleteCode(),
+    sex: 'male',
+    bodyweightKg: 104,
     event: 'USAPL Nationals',
     meetDate: '2026-12-17',
     coachId: coach.id,
     pbs: { squat: 250, bench: 180, deadlift: 300 },
     e1rm: { squat: 250, bench: 180, deadlift: 300 },
-    blocks: [{ id: 'b1', name: 'Block 1', weeks: 3 }, { id: 'b2', name: 'Block 2', weeks: 3 }, { id: 'b3', name: 'Block 3', weeks: 2 }],
+    blocks: [{ id: 'b1', name: 'Block 1', weeks: 3, coachId: coach.id }, { id: 'b2', name: 'Block 2', weeks: 3, coachId: coach.id }, { id: 'b3', name: 'Block 3', weeks: 2, coachId: coach.id }],
   })
   const sofia = makeAthlete({
     id: 'sofia',
     name: 'Sofia Reyes',
     code: makeAthleteCode(),
+    sex: 'female',
+    bodyweightKg: 63,
     event: 'Off-season',
     meetDate: '2027-02-11',
     planningMode: 'block',
@@ -606,28 +676,32 @@ export function createWorkspace() {
   })
 
   const olaPlan = publishedPlan(ola.liftLibrary, 4)
-  ola.plans = { b1: olaPlan }
+  ola.plans = { b1: { ...olaPlan, coachId: coach.id } }
   const mondayRows = expandDaySets(olaPlan.weeks[0].days[0], ola)
   const videoIds = [uid(), uid()]
-  const planLogs = [mondayRows[0], mondayRows[1]].filter(Boolean).map((row, i) => (
-    logFromRow(row, 'b1', 0, 0, ola.startDate, videoIds[i])
-  ))
-  ola.logs = [...planLogs, ...ola.logs]
-  ola.videos = planLogs.map((log) => videoFromLog(log, 'Block 1'))
+  const planLogs = [mondayRows[0], mondayRows[1]].filter(Boolean).map((row, i) => ({
+    ...logFromRow(row, 'b1', 0, 0, ola.startDate, videoIds[i]),
+    coachId: coach.id,
+  }))
+  ola.logs = [...planLogs, ...ola.logs.map((l) => ({ ...l, coachId: coach.id }))]
+  ola.videos = planLogs.map((log) => ({ ...videoFromLog(log, 'Block 1'), coachId: coach.id }))
+  ola.e1rmSeries = (ola.e1rmSeries || []).map((p) => ({ ...p, coachId: coach.id }))
 
-  marcus.plans = { b1: publishedPlan(marcus.liftLibrary, 3) }
+  marcus.plans = { b1: { ...publishedPlan(marcus.liftLibrary, 3), coachId: coach.id } }
+  marcus.logs = (marcus.logs || []).map((l) => ({ ...l, coachId: coach.id }))
+  marcus.e1rmSeries = (marcus.e1rmSeries || []).map((p) => ({ ...p, coachId: coach.id }))
 
   const messages = {
     ola: [
-      { id: uid(), from: 'coach', text: 'Block 1 is up. Thursday deadlift is a top double at 8, then three back-off triples. Film each working set.', at: atDaysAgo(2, 8, 40), attachment: null, unread: false },
-      { id: uid(), from: 'athlete', text: 'Monday squat felt fast. I’ll get the deadlift from the side.', at: atDaysAgo(2, 18, 5), attachment: null, unread: false },
-      { id: uid(), from: 'coach', text: 'Side angle is the one I want. The caption should match whatever you actually logged.', at: atDaysAgo(1, 9, 12), attachment: null, unread: false },
-      { id: uid(), from: 'athlete', text: 'On my way in. I’ll log the top set before the backdowns.', at: atDaysAgo(0, 7, 48), attachment: null, unread: true },
+      { id: uid(), from: 'coach', text: 'Block 1 is up. Thursday deadlift is a top double at 8, then three back-off triples. Film each working set.', at: atDaysAgo(2, 8, 40), attachment: null, unread: false, coachId: coach.id },
+      { id: uid(), from: 'athlete', text: 'Monday squat felt fast. I’ll get the deadlift from the side.', at: atDaysAgo(2, 18, 5), attachment: null, unread: false, coachId: coach.id },
+      { id: uid(), from: 'coach', text: 'Side angle is the one I want. The caption should match whatever you actually logged.', at: atDaysAgo(1, 9, 12), attachment: null, unread: false, coachId: coach.id },
+      { id: uid(), from: 'athlete', text: 'On my way in. I’ll log the top set before the backdowns.', at: atDaysAgo(0, 7, 48), attachment: null, unread: true, coachId: coach.id },
     ],
     marcus: [
-      { id: uid(), from: 'coach', text: 'Bench stays competition grip. Send Tuesday’s top set when you have it.', at: atDaysAgo(3, 11, 5), attachment: null, unread: false },
-      { id: uid(), from: 'athlete', text: 'Elbow was quiet. I’ll film set 1.', at: atDaysAgo(3, 16, 40), attachment: null, unread: false },
-      { id: uid(), from: 'coach', text: 'If the bar speed dies, cut the backdowns and tell me in here.', at: atDaysAgo(1, 12, 15), attachment: null, unread: false },
+      { id: uid(), from: 'coach', text: 'Bench stays competition grip. Send Tuesday’s top set when you have it.', at: atDaysAgo(3, 11, 5), attachment: null, unread: false, coachId: coach.id },
+      { id: uid(), from: 'athlete', text: 'Elbow was quiet. I’ll film set 1.', at: atDaysAgo(3, 16, 40), attachment: null, unread: false, coachId: coach.id },
+      { id: uid(), from: 'coach', text: 'If the bar speed dies, cut the backdowns and tell me in here.', at: atDaysAgo(1, 12, 15), attachment: null, unread: false, coachId: coach.id },
     ],
     sofia: [],
   }

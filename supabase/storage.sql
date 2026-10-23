@@ -21,3 +21,8 @@ create policy "media_anon_update"
   on storage.objects for update
   using (bucket_id = 'media')
   with check (bucket_id = 'media');
+
+drop policy if exists "media_anon_delete" on storage.objects;
+create policy "media_anon_delete"
+  on storage.objects for delete
+  using (bucket_id = 'media');
