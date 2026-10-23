@@ -1,5 +1,5 @@
 import { Eye } from 'lucide-react'
-import { BLOCK_PALETTE, formatMeetDate } from '../domain'
+import { BLOCK_PALETTE, WEEK_CELL_PX, formatMeetDate } from '../domain'
 import { MesoSheet } from './MesoSheet'
 import { Card, useCountdown } from './ui'
 
@@ -55,8 +55,8 @@ export function AthleteProgramme({
           </div>
         </div>
         <div className="overflow-x-auto">
-          <div className="min-w-[860px]">
-            <div className="mb-2 grid gap-1" style={{ gridTemplateColumns: `repeat(${weeks}, minmax(0,1fr))` }}>
+          <div style={{ width: weeks * WEEK_CELL_PX, minWidth: weeks * WEEK_CELL_PX }}>
+            <div className="mb-2 grid gap-1" style={{ gridTemplateColumns: `repeat(${weeks}, ${WEEK_CELL_PX}px)` }}>
               {blocks.map((block, i) => (
                 <button key={block.id} type="button" onClick={() => onSelectBlock(block.id)} style={{ gridColumn: `span ${block.weeks}` }} className={`rounded-lg border px-3 py-2 text-left ${BLOCK_PALETTE[i % 4].surface} ${selectedBlockId === block.id ? 'ring-2 ring-lime-400' : ''}`}>
                   <div className="text-sm font-medium">{block.name}</div>
@@ -64,7 +64,7 @@ export function AthleteProgramme({
                 </button>
               ))}
             </div>
-            <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${weeks}, minmax(0,1fr))` }}>
+            <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${weeks}, ${WEEK_CELL_PX}px)` }}>
               {timeline.map((cell) => (
                 <div key={cell.week} className={`rounded-lg border bg-[#10131a] px-1.5 py-2 ${BLOCK_PALETTE[cell.blockIndex % 4].chip}`}>
                   <div className="font-display text-sm text-white">Wk {cell.week}</div>

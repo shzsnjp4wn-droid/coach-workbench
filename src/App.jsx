@@ -3,13 +3,15 @@ import { ChevronDown, Dumbbell, LayoutGrid, MessageCircle, TrendingUp, Video, Za
 import { AthleteProgramme } from './components/AthleteProgramme'
 import { AthleteToday } from './components/AthleteToday'
 import { CoachProgramme } from './components/CoachProgramme'
-import { ConnectGate, RoleGate } from './components/Gates'
+import { ConnectGate, ProfileGate, RoleGate } from './components/Gates'
 import { MessagesPage } from './components/MessagesPage'
 import { ProgressPage } from './components/ProgressPage'
 import { VideosPage } from './components/VideosPage'
 import {
   COACH as FALLBACK_COACH,
   WEEKDAYS,
+  createAthleteProfile,
+  createCoachProfile,
   e1FromSet,
   emptyPlan,
   findLog,
@@ -25,8 +27,12 @@ import {
   unreadCount,
 } from './domain'
 import {
+  deleteVideo,
   fetchWorkspace,
   formatSupabaseError,
+  allocateUniqueUserCode,
+  insertAthleteWithStructure,
+  insertCoach,
   insertMessage,
   markMessagesRead,
   persistAthleteStructure,
@@ -39,10 +45,25 @@ import {
   upsertVideo,
 } from './supabaseClient'
 
-const PERSIST_DEBOUNCE_MS = 50
+// Coalesce bursty keystrokes into one write on the next macrotask (not hundreds of ms).
+const PERSIST_DEBOUNCE_MS = 0
+const SESSION_KEY = 'iw_session'
+
+function readSession() {
+  try {
+    return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null')
+  } catch {
+    return null
+  }
+}
+
+function writeSession(session) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify(session))
+}
 
 export default function App() {
   const [boot, setBoot] = useState({ status: 'loading', error: null })
+  const [coaches, setCoaches] = useState([])
   const [coach, setCoach] = useState(FALLBACK_COACH)
   const [screen, setScreen] = useState('role')
   const [role, setRole] = useState(null)
@@ -58,8 +79,15 @@ export default function App() {
   const [saveState, setSaveState] = useState('idle')
   const persistTimers = useRef({})
   const persistFns = useRef({})
+  const athletesRef = useRef(athletes)
+  const messagesRef = useRef(messages)
+  const athleteIdRef = useRef(athleteId)
+  const bootGenRef = useRef(0)
   const toastRef = useRef(setToast)
   toastRef.current = setToast
+  athletesRef.current = athletes
+  messagesRef.current = messages
+  athleteIdRef.current = athleteId
 
   function reportPersistError(key, err) {
     const message = err?.message || formatSupabaseError(err, key) || `Could not save ${key}`
@@ -104,7 +132,6 @@ export default function App() {
 
   useEffect(() => {
     const onLeave = () => {
-      // Fire pending writes before the document unloads (refresh/close/tab hide).
       void flushPersistsRef.current()
     }
     const onVisibility = () => {
@@ -122,12 +149,13 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    const gen = ++bootGenRef.current
     let cancelled = false
     async function bootFromSupabase() {
       setBoot({ status: 'loading', error: null })
       try {
         const workspace = await fetchWorkspace()
-        if (cancelled) return
+        if (cancelled || gen !== bootGenRef.current) return
         if (!workspace.coaches.length) {
           throw new Error('No coaches found in Supabase. Run the seed script after schema setup.')
         }
@@ -135,13 +163,36 @@ export default function App() {
           throw new Error('No athletes found in Supabase. Run npm run seed:supabase.')
         }
         // Use DB rows only — do not merge createWorkspace() / domain mock presets.
-        const nextCoach = workspace.coaches.find((c) => c.id === FALLBACK_COACH.id) || workspace.coaches[0]
-        setCoach(nextCoach)
+        const nextCoaches = workspace.coaches.length ? workspace.coaches : [FALLBACK_COACH]
+        setCoaches(nextCoaches)
         setAthletes(workspace.athletes)
         setMessages(workspace.messages)
+        athletesRef.current = workspace.athletes
+        messagesRef.current = workspace.messages
+
+        const session = readSession()
+        if (session?.role === 'coach' && session.coachId) {
+          const found = nextCoaches.find((c) => c.id === session.coachId)
+          if (found) {
+            setCoach(found)
+            setRole('coach')
+            setScreen('connect')
+          } else {
+            setCoach(nextCoaches.find((c) => c.id === FALLBACK_COACH.id) || nextCoaches[0])
+          }
+        } else if (session?.role === 'athlete' && session.athleteId && workspace.athletes[session.athleteId]) {
+          const person = workspace.athletes[session.athleteId]
+          setAthleteId(person.id)
+          setRole('athlete')
+          const linked = nextCoaches.find((c) => c.id === person.coachId)
+          setCoach(linked || nextCoaches.find((c) => c.id === FALLBACK_COACH.id) || nextCoaches[0])
+          setScreen('connect')
+        } else {
+          setCoach(nextCoaches.find((c) => c.id === FALLBACK_COACH.id) || nextCoaches[0])
+        }
         setBoot({ status: 'ready', error: null })
       } catch (err) {
-        if (cancelled) return
+        if (cancelled || gen !== bootGenRef.current) return
         console.error('[supabase] workspace load failed', err)
         setBoot({
           status: 'error',
@@ -177,56 +228,65 @@ export default function App() {
     : (athlete ? unreadCount(messages, athlete.id, 'athlete') : 0)
 
   function patchAthlete(mutator) {
-    setAthletes((prev) => {
-      const current = prev[athleteId]
-      if (!current) return prev
-      const next = mutator({ ...current })
-      schedulePersist(`athlete:${athleteId}`, () => persistAthleteStructure(next))
-      // If this mutation also changed plans (e.g. via nested callers), they persist separately.
-      return { ...prev, [athleteId]: next }
+    const id = athleteIdRef.current
+    const current = athletesRef.current[id]
+    if (!current) return
+    const next = mutator({ ...current })
+    const result = { ...athletesRef.current, [id]: next }
+    athletesRef.current = result
+    setAthletes(result)
+    schedulePersist(`athlete:${id}`, async () => {
+      const latest = athletesRef.current[id]
+      if (latest) await persistAthleteStructure(latest)
     })
   }
 
   function patchPlan(mutator) {
-    if (!selectedBlock || !athleteId) return
+    const id = athleteIdRef.current
+    if (!selectedBlock || !id) return
     const blockId = selectedBlock.id
     const blockWeeks = selectedBlock.weeks
-    setAthletes((prev) => {
-      const current = prev[athleteId]
-      if (!current) return prev
-      const base = syncPlanLength(current.plans[blockId] || emptyPlan(blockWeeks), blockWeeks)
-      const nextPlan = mutator(base, current)
-      const next = { ...current, plans: { ...current.plans, [blockId]: nextPlan } }
-      schedulePersist(`plan:${athleteId}:${blockId}`, () => persistPlan(athleteId, blockId, nextPlan))
-      return { ...prev, [athleteId]: next }
+    const current = athletesRef.current[id]
+    if (!current) return
+    const base = syncPlanLength(current.plans[blockId] || emptyPlan(blockWeeks), blockWeeks)
+    const nextPlan = mutator(base, current)
+    const next = { ...current, plans: { ...current.plans, [blockId]: nextPlan } }
+    const result = { ...athletesRef.current, [id]: next }
+    athletesRef.current = result
+    setAthletes(result)
+    schedulePersist(`plan:${id}:${blockId}`, async () => {
+      const plan = athletesRef.current[id]?.plans?.[blockId]
+      if (plan) await persistPlan(id, blockId, plan)
     })
   }
 
-  function ensureBlock(id, opts = {}, person = athletes[athleteId]) {
+  function ensureBlock(id, opts = {}, person = athletesRef.current[athleteIdRef.current]) {
     if (!person) return
     const blockList = normalizeBlocks(person.blocks, runwayWeeks(person))
     const block = blockList.find((b) => b.id === id)
     if (!block) return
-    const hadPlan = Boolean(person.plans[id])
-    const synced = syncPlanLength(person.plans[id] || emptyPlan(block.weeks), block.weeks)
-    setAthletes((prev) => {
-      const current = prev[person.id]
-      if (!current) return prev
-      const nextPlan = syncPlanLength(current.plans[id] || emptyPlan(block.weeks), block.weeks)
-      const next = {
-        ...current,
-        plans: {
-          ...current.plans,
-          [id]: nextPlan,
-        },
-      }
-      // Only write when creating a missing plan or length-syncing an existing one.
-      const prevLen = current.plans[id]?.weeks?.length
-      if (!hadPlan || prevLen !== nextPlan.weeks.length) {
-        schedulePersist(`plan:${person.id}:${id}`, () => persistPlan(person.id, id, nextPlan))
-      }
-      return { ...prev, [person.id]: next }
-    })
+    const existing = person.plans[id]
+    const synced = syncPlanLength(existing || emptyPlan(block.weeks), block.weeks)
+    const current = athletesRef.current[person.id] || person
+    const nextPlan = syncPlanLength(current.plans[id] || emptyPlan(block.weeks), block.weeks)
+    const next = {
+      ...current,
+      plans: {
+        ...current.plans,
+        [id]: nextPlan,
+      },
+    }
+    const result = { ...athletesRef.current, [person.id]: next }
+    athletesRef.current = result
+    setAthletes(result)
+    // Never auto-write a brand-new empty plan (that overwrites nothing useful and
+    // can race with real edits). Only persist when length-syncing an existing plan.
+    if (existing && (existing.weeks?.length || 0) !== nextPlan.weeks.length) {
+      schedulePersist(`plan:${person.id}:${id}`, async () => {
+        const plan = athletesRef.current[person.id]?.plans?.[id]
+        if (plan) await persistPlan(person.id, id, plan)
+      })
+    }
     let week = opts.week ?? 0
     let day = opts.day ?? 0
     if (opts.jumpToday) {
@@ -263,55 +323,83 @@ export default function App() {
     }
   }
 
-  async function connectAthlete(id, enter = false) {
-    const person = athletes[id]
-    if (!person) return
-    if (person.coachId === coach.id) {
-      setToast(`${person.name} is already connected`)
-      if (enter) openPerson(person, 'athlete')
+  function saveSession(next) {
+    writeSession(next)
+  }
+
+  async function createProfile(name) {
+    if (role === 'coach') {
+      const code = await allocateUniqueUserCode('coach')
+      const profile = createCoachProfile({ name, code })
+      await insertCoach(profile)
+      setCoaches((prev) => [...prev, profile])
+      setCoach(profile)
+      saveSession({ role: 'coach', coachId: profile.id })
+      setToast(`Welcome ${profile.name} · ${profile.code}`)
+      setScreen('connect')
+      return
+    }
+    const code = await allocateUniqueUserCode('athlete')
+    const profile = createAthleteProfile({ name, code })
+    await insertAthleteWithStructure(profile)
+    const nextAthletes = { ...athletesRef.current, [profile.id]: profile }
+    athletesRef.current = nextAthletes
+    setAthletes(nextAthletes)
+    setMessages((prev) => {
+      const next = { ...prev, [profile.id]: prev[profile.id] || [] }
+      messagesRef.current = next
+      return next
+    })
+    setAthleteId(profile.id)
+    saveSession({ role: 'athlete', athleteId: profile.id })
+    setToast(`Welcome ${profile.name} · ${profile.code}`)
+    setScreen('connect')
+  }
+
+  function selectExistingProfile(person) {
+    if (role === 'coach') {
+      setCoach(person)
+      saveSession({ role: 'coach', coachId: person.id })
+      setScreen('connect')
+      return
+    }
+    setAthleteId(person.id)
+    const linked = coaches.find((c) => c.id === person.coachId)
+    if (linked) setCoach(linked)
+    saveSession({ role: 'athlete', athleteId: person.id })
+    setScreen('connect')
+  }
+
+  async function connectAthleteToCoach(athletePersonId, coachPersonId, { open = false } = {}) {
+    const person = athletesRef.current[athletePersonId]
+    const targetCoach = coaches.find((c) => c.id === coachPersonId) || coach
+    if (!person || !targetCoach) return
+    if (person.coachId === targetCoach.id) {
+      setToast(`${person.name} is already connected to ${targetCoach.name}`)
+      if (open) openPerson({ ...person, coachId: targetCoach.id }, role === 'athlete' ? 'athlete' : 'coach')
       return
     }
     try {
-      await updateAthleteCoachId(id, coach.id)
-      const next = { ...person, coachId: coach.id }
-      setAthletes((prev) => ({ ...prev, [id]: { ...prev[id], coachId: coach.id } }))
-      setToast(`${person.name} connected to ${coach.name}`)
-      if (enter) openPerson(next, 'athlete')
+      await updateAthleteCoachId(athletePersonId, targetCoach.id)
+      const next = { ...person, coachId: targetCoach.id }
+      const nextAthletes = { ...athletesRef.current, [athletePersonId]: next }
+      athletesRef.current = nextAthletes
+      setAthletes(nextAthletes)
+      setCoach(targetCoach)
+      setToast(`${person.name} connected to ${targetCoach.name}`)
+      if (open) openPerson(next, role === 'athlete' ? 'athlete' : 'coach')
     } catch (err) {
       console.error('[supabase] connect failed', err)
       setToast(err?.message || formatSupabaseError(err, 'connect'))
     }
   }
 
-  function submitCode(raw, athleteTarget) {
-    const code = raw.trim().toUpperCase()
-    if (!code) {
-      setToast('Enter a code')
+  async function onCoachSearchConnect(person) {
+    if (person.coachId === coach.id) {
+      openPerson(athletesRef.current[person.id], 'coach')
       return
     }
-    if (role === 'coach') {
-      if (code === coach.code) {
-        setToast('Ask the athlete for their code')
-        return
-      }
-      const found = Object.values(athletes).find((a) => a.code === code)
-      if (!found) {
-        setToast('No athlete with that code')
-        return
-      }
-      connectAthlete(found.id, false)
-      return
-    }
-    if (!athleteTarget) return
-    if (code === coach.code) {
-      connectAthlete(athleteTarget, true)
-      return
-    }
-    if (Object.values(athletes).some((a) => a.code === code)) {
-      setToast(`Use your coach’s code, ${coach.code}`)
-      return
-    }
-    setToast('No coach with that code')
+    await connectAthleteToCoach(person.id, coach.id, { open: false })
   }
 
   async function copyCode(text) {
@@ -326,7 +414,8 @@ export default function App() {
   async function logSet({ block, weekIndex, dayIndex, row, weight, reps, rpe, shifted, date, media }) {
     const caption = setCaption({ setNumber: row.setNumber, reps, weight, rpe })
     const e1 = row.lift ? e1FromSet(weight, reps, rpe) : null
-    const current = athletes[athleteId]
+    const id = athleteIdRef.current
+    const current = athletesRef.current[id]
     if (!current) return
 
     const existing = findLog(current.logs, block.id, weekIndex, dayIndex, row.setKey)
@@ -334,104 +423,106 @@ export default function App() {
     let videoId = existing?.videoId || null
     let uploadedUrl = null
 
-    if (media) {
-      videoId = videoId || uid()
-      uploadedUrl = await uploadMedia(current.id, videoId, media)
-      const video = {
-        id: videoId,
-        logId: existing?.id || null,
-        date,
-        blockId: block.id,
-        blockName: block.name,
-        weekIndex,
-        dayIndex,
-        setNumber: row.setNumber,
-        exercise: row.exercise,
-        label: row.label,
-        lift: row.lift,
-        reps,
-        weight,
-        rpe,
-        url: uploadedUrl || media.url,
-        type: media.type,
-        name: media.name,
-        caption,
-      }
-      videos = [video, ...videos.filter((v) => v.id !== videoId)]
-    } else if (videoId) {
-      videos = videos.map((v) => (v.id === videoId ? {
-        ...v,
-        date,
-        reps,
-        weight,
-        rpe,
-        caption,
-        setNumber: row.setNumber,
-        exercise: row.exercise,
-        label: row.label,
-        lift: row.lift,
-      } : v))
-    }
-
-    const log = {
-      id: existing?.id || uid(),
-      setKey: row.setKey,
-      blockId: block.id,
-      weekIndex,
-      dayIndex,
-      setNumber: row.setNumber,
-      exercise: row.exercise,
-      label: row.label,
-      lift: row.lift,
-      weight,
-      reps,
-      rpe,
-      e1,
-      date,
-      videoId,
-    }
-    if (videoId) videos = videos.map((v) => (v.id === videoId ? { ...v, logId: log.id } : v))
-
-    let e1rmSeries = current.e1rmSeries
-    let e1rm = current.e1rm
-    let seriesPoint = null
-    if (row.lift && e1) {
-      e1rmSeries = pushE1rm(current.e1rmSeries, row.lift, e1, date)
-      seriesPoint = e1rmSeries.find((p) => p.date === date) || e1rmSeries[e1rmSeries.length - 1]
-      e1rm = { ...current.e1rm, [row.lift]: seriesPoint[row.lift] }
-    }
-
-    let scheduleOverrides = current.scheduleOverrides
-    let newOverride = null
-    if (shifted) {
-      newOverride = {
-        blockId: block.id,
-        weekIndex,
-        dayIndex,
-        prescribedWeekday: WEEKDAYS[dayIndex],
-        actualWeekday: WEEKDAYS[(new Date().getDay() + 6) % 7],
-        date: todayISO(),
-      }
-      scheduleOverrides = [
-        ...current.scheduleOverrides.filter((o) => !(o.blockId === block.id && o.weekIndex === weekIndex && o.dayIndex === dayIndex)),
-        newOverride,
-      ]
-    }
-
-    const nextAthlete = {
-      ...current,
-      logs: [log, ...current.logs.filter((l) => l.id !== log.id)],
-      videos,
-      e1rm,
-      e1rmSeries,
-      scheduleOverrides,
-    }
-    setAthletes((prev) => ({ ...prev, [athleteId]: nextAthlete }))
-
     try {
+      if (media) {
+        videoId = videoId || uid()
+        uploadedUrl = await uploadMedia(current.id, videoId, media)
+        const video = {
+          id: videoId,
+          logId: existing?.id || null,
+          date,
+          blockId: block.id,
+          blockName: block.name,
+          weekIndex,
+          dayIndex,
+          setNumber: row.setNumber,
+          exercise: row.exercise,
+          label: row.label,
+          lift: row.lift,
+          reps,
+          weight,
+          rpe,
+          url: uploadedUrl,
+          type: media.type,
+          name: media.name,
+          caption,
+        }
+        videos = [video, ...videos.filter((v) => v.id !== videoId)]
+      } else if (videoId) {
+        videos = videos.map((v) => (v.id === videoId ? {
+          ...v,
+          date,
+          reps,
+          weight,
+          rpe,
+          caption,
+          setNumber: row.setNumber,
+          exercise: row.exercise,
+          label: row.label,
+          lift: row.lift,
+        } : v))
+      }
+
+      const log = {
+        id: existing?.id || uid(),
+        setKey: row.setKey,
+        blockId: block.id,
+        weekIndex,
+        dayIndex,
+        setNumber: row.setNumber,
+        exercise: row.exercise,
+        label: row.label,
+        lift: row.lift,
+        weight,
+        reps,
+        rpe,
+        e1,
+        date,
+        videoId,
+      }
+      if (videoId) videos = videos.map((v) => (v.id === videoId ? { ...v, logId: log.id } : v))
+
+      let e1rmSeries = current.e1rmSeries
+      let e1rm = current.e1rm
+      let seriesPoint = null
+      if (row.lift && e1) {
+        e1rmSeries = pushE1rm(current.e1rmSeries, row.lift, e1, date)
+        seriesPoint = e1rmSeries.find((p) => p.date === date) || e1rmSeries[e1rmSeries.length - 1]
+        e1rm = { ...current.e1rm, [row.lift]: seriesPoint[row.lift] }
+      }
+
+      let scheduleOverrides = current.scheduleOverrides
+      let newOverride = null
+      if (shifted) {
+        newOverride = {
+          blockId: block.id,
+          weekIndex,
+          dayIndex,
+          prescribedWeekday: WEEKDAYS[dayIndex],
+          actualWeekday: WEEKDAYS[(new Date().getDay() + 6) % 7],
+          date: todayISO(),
+        }
+        scheduleOverrides = [
+          ...current.scheduleOverrides.filter((o) => !(o.blockId === block.id && o.weekIndex === weekIndex && o.dayIndex === dayIndex)),
+          newOverride,
+        ]
+      }
+
+      const nextAthlete = {
+        ...current,
+        logs: [log, ...current.logs.filter((l) => l.id !== log.id)],
+        videos,
+        e1rm,
+        e1rmSeries,
+        scheduleOverrides,
+      }
+      const nextAthletes = { ...athletesRef.current, [id]: nextAthlete }
+      athletesRef.current = nextAthletes
+      setAthletes(nextAthletes)
+
       if (media && videoId) {
         const videoRow = videos.find((v) => v.id === videoId)
-        await upsertVideo(current.id, { ...videoRow, url: uploadedUrl || videoRow.url, logId: null })
+        await upsertVideo(current.id, { ...videoRow, url: uploadedUrl, logId: null })
       } else if (videoId && !media) {
         const videoRow = videos.find((v) => v.id === videoId)
         if (videoRow) await upsertVideo(current.id, videoRow)
@@ -447,10 +538,36 @@ export default function App() {
       }
       if (newOverride) await upsertScheduleOverride(current.id, newOverride)
       const estimate = e1 ? ` · e1RM ${fmtKg(e1)}` : ''
-      setToast(media ? `Clip saved · ${caption}${estimate}` : `Logged · ${caption}${estimate}`)
+      setToast(media ? `Clip uploaded · ${caption}${estimate}` : `Logged · ${caption}${estimate}`)
+      setSaveState('saved')
     } catch (err) {
       console.error('[supabase] logSet failed', err)
       setToast(err?.message || formatSupabaseError(err, 'log set'))
+      setSaveState('error')
+      throw err
+    }
+  }
+
+  async function removeLoggedVideo({ log, video }) {
+    if (!log || !video) return
+    const id = athleteIdRef.current
+    const current = athletesRef.current[id]
+    if (!current) return
+    try {
+      await deleteVideo(current.id, video.id)
+      const nextAthlete = {
+        ...current,
+        videos: current.videos.filter((v) => v.id !== video.id),
+        logs: current.logs.map((l) => (l.id === log.id ? { ...l, videoId: null } : l)),
+      }
+      const nextAthletes = { ...athletesRef.current, [id]: nextAthlete }
+      athletesRef.current = nextAthletes
+      setAthletes(nextAthletes)
+      setToast('Clip removed')
+      setSaveState('saved')
+    } catch (err) {
+      console.error('[supabase] remove video failed', err)
+      setToast(err?.message || formatSupabaseError(err, 'remove video'))
       setSaveState('error')
     }
   }
@@ -470,13 +587,23 @@ export default function App() {
   }, [role])
 
   async function sendMessage(id, from, text, attachment) {
-    let storedAttachment = attachment
+    let storedAttachment = null
     const msgId = uid()
     if (attachment) {
-      const publicUrl = await uploadMedia(id, `msg-${msgId}`, attachment)
-      storedAttachment = publicUrl
-        ? { ...attachment, url: publicUrl }
-        : { ...attachment }
+      let publicUrl = ''
+      try {
+        publicUrl = await uploadMedia(id, `msg-${msgId}`, attachment)
+      } catch (err) {
+        console.warn('[supabase] message attachment upload failed', err)
+        setToast(err?.message || 'Attachment upload failed — message will send without the file URL')
+      }
+      storedAttachment = {
+        name: attachment.name || '',
+        type: attachment.type || '',
+        size: attachment.size || 0,
+        kind: attachment.kind || 'file',
+        url: publicUrl || '',
+      }
     }
     const msg = {
       id: msgId,
@@ -486,9 +613,13 @@ export default function App() {
       attachment: storedAttachment,
       unread: true,
     }
-    setMessages((prev) => ({ ...prev, [id]: [...(prev[id] || []), msg] }))
+    const nextThread = [...(messagesRef.current[id] || []), msg]
+    const nextMessages = { ...messagesRef.current, [id]: nextThread }
+    messagesRef.current = nextMessages
+    setMessages(nextMessages)
     try {
       await insertMessage(id, msg)
+      setSaveState('saved')
     } catch (err) {
       console.error('[supabase] sendMessage failed', err)
       setToast(err?.message || formatSupabaseError(err, 'send message'))
@@ -558,21 +689,51 @@ export default function App() {
   }
 
   if (screen === 'role' || !role) {
-    return <RoleGate onChoose={(next) => { setRole(next); setScreen('connect') }} />
+    return (
+      <RoleGate onChoose={(next) => {
+        setRole(next)
+        setScreen('profile')
+      }}
+      />
+    )
   }
 
-  if (screen === 'connect' || !athlete) {
+  if (screen === 'profile') {
+    return (
+      <>
+        <ProfileGate
+          role={role}
+          coaches={coaches}
+          athletes={athletes}
+          onBack={() => { setScreen('role'); setRole(null) }}
+          onCreate={async (name) => {
+            try {
+              await createProfile(name)
+            } catch (err) {
+              console.error('[supabase] create profile failed', err)
+              setToast(err?.message || formatSupabaseError(err, 'create profile'))
+            }
+          }}
+          onSelect={selectExistingProfile}
+        />
+        {toast && <Toast text={toast} tone={role} />}
+      </>
+    )
+  }
+
+  if (screen === 'connect' || (role === 'athlete' && !athlete) || (role === 'coach' && !coach)) {
     return (
       <>
         <ConnectGate
           role={role}
           coach={coach}
+          coaches={coaches}
           athletes={athletes}
-          initialAthleteId={role === 'athlete' ? athleteId : null}
-          onConnect={connectAthlete}
+          selfAthlete={role === 'athlete' ? athlete : null}
           onOpen={(id) => openPerson(athletes[id], role)}
-          onCode={submitCode}
-          onBack={() => { setScreen('role'); setRole(null) }}
+          onConnectCoach={(coachId) => connectAthleteToCoach(athleteId, coachId, { open: true })}
+          onSearchConnect={onCoachSearchConnect}
+          onBack={() => { setScreen('profile') }}
           onCopy={copyCode}
         />
         {toast && <Toast text={toast} tone={role} />}
@@ -610,9 +771,27 @@ export default function App() {
           )}
           <div className="ml-auto flex items-center gap-2">
             <button type="button" onClick={() => setScreen('connect')} className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">
-              {role === 'coach' ? 'Roster' : 'Switch'}
+              {role === 'coach' ? 'Roster' : 'Connect'}
             </button>
-            <button type="button" onClick={() => { setScreen('role'); setRole(null) }} className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">Change role</button>
+            <button
+              type="button"
+              onClick={() => { setScreen('profile') }}
+              className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400"
+            >
+              Profiles
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                localStorage.removeItem(SESSION_KEY)
+                setScreen('role')
+                setRole(null)
+                setAthleteId(null)
+              }}
+              className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400"
+            >
+              Change role
+            </button>
           </div>
         </div>
         <nav className="mx-auto flex max-w-[1600px] gap-1 overflow-x-auto px-4 pb-3">
@@ -660,6 +839,7 @@ export default function App() {
             onSelectWeek={setSelectedWeek}
             onSelectDay={setSelectedDay}
             onCommit={logSet}
+            onRemoveVideo={removeLoggedVideo}
           />
         )}
         {role === 'athlete' && page === 'programme' && (

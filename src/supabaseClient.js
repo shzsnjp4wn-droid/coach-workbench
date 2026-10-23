@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { makeAthleteCode, makeCoachCode } from './domain'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -269,6 +270,14 @@ export async function syncBlocks(athleteId, blocks) {
     .eq('athlete_id', athleteId)
   assertOk(readError, 'read blocks')
 
+  // Never wipe every block because of a bad empty client payload (cascades wipe plans).
+  if (!blocks.length) {
+    if ((existing || []).length) {
+      throw new Error('sync blocks: refusing to delete all blocks from an empty payload')
+    }
+    return
+  }
+
   const nextKeys = new Set(blocks.map((b) => b.id))
   const toDelete = (existing || []).map((r) => r.block_key).filter((key) => !nextKeys.has(key))
   if (toDelete.length) {
@@ -280,7 +289,6 @@ export async function syncBlocks(athleteId, blocks) {
     assertOk(error, 'delete blocks')
   }
 
-  if (!blocks.length) return
   const rows = blocks.map((b, position) => ({
     athlete_id: athleteId,
     block_key: b.id,
@@ -428,31 +436,97 @@ export async function markMessagesRead(athleteId, readerRole) {
 }
 
 export async function uploadMedia(athleteId, objectId, media) {
-  if (!media?.url) return null
-  try {
-    const blob = await fetch(media.url).then((r) => r.blob())
-    const ext = (media.name && media.name.includes('.'))
-      ? media.name.split('.').pop()
-      : (blob.type.split('/')[1] || 'bin')
-    const path = `${athleteId}/${objectId}.${ext}`
-    const { error: upError } = await supabase.storage
-      .from(MEDIA_BUCKET)
-      .upload(path, blob, { upsert: true, contentType: media.type || blob.type || 'application/octet-stream' })
-    if (upError) {
-      console.warn('[supabase] media upload skipped:', upError.message)
-      return null
-    }
-    const { data } = supabase.storage.from(MEDIA_BUCKET).getPublicUrl(path)
-    return data?.publicUrl || null
-  } catch (err) {
-    console.warn('[supabase] media upload failed', err)
-    return null
+  if (!media?.url) {
+    throw new Error('upload media: missing local file url')
   }
+  let blob
+  try {
+    blob = await fetch(media.url).then((r) => r.blob())
+  } catch (err) {
+    throw new Error(`upload media: could not read file (${err?.message || err})`)
+  }
+  const ext = (media.name && media.name.includes('.'))
+    ? media.name.split('.').pop()
+    : (blob.type.split('/')[1] || 'bin')
+  const path = `${athleteId}/${objectId}.${ext}`
+  const { error: upError } = await supabase.storage
+    .from(MEDIA_BUCKET)
+    .upload(path, blob, { upsert: true, contentType: media.type || blob.type || 'application/octet-stream' })
+  if (upError) {
+    throw new Error(
+      formatSupabaseError(upError, 'upload media')
+      + ' — run supabase/storage.sql in the SQL editor if the media bucket is missing.',
+    )
+  }
+  const { data } = supabase.storage.from(MEDIA_BUCKET).getPublicUrl(path)
+  if (!data?.publicUrl) throw new Error('upload media: no public URL returned')
+  return data.publicUrl
+}
+
+/**
+ * Mint ATH-… / CH-… until the code is unused in the matching table.
+ * Long random bodies make collisions vanishingly rare; we still re-roll if one hits.
+ */
+export async function allocateUniqueUserCode(kind, { maxAttempts = 16 } = {}) {
+  const table = kind === 'coach' ? 'coaches' : 'athletes'
+  const mint = kind === 'coach' ? makeCoachCode : makeAthleteCode
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const code = mint()
+    const { data, error } = await supabase
+      .from(table)
+      .select('id')
+      .eq('code', code)
+      .maybeSingle()
+    assertOk(error, `check ${kind} code uniqueness`)
+    if (!data) return code
+    console.warn(`[supabase] ${kind} code collision on attempt ${attempt}: ${code}`)
+  }
+  throw new Error(
+    `Could not allocate a unique ${kind} code after ${maxAttempts} attempts`,
+  )
+}
+
+export async function insertCoach(coach) {
+  const { data, error } = await supabase
+    .from('coaches')
+    .insert({ id: coach.id, name: coach.name, code: coach.code })
+    .select('id, name, code')
+  assertOk(error, 'insert coach')
+  assertWrote(data, 'insert coach')
+  return mapCoachRow(data[0])
+}
+
+export async function insertAthleteWithStructure(athlete) {
+  await upsertAthleteProfile(athlete)
+  await syncBlocks(athlete.id, athlete.blocks || [])
+  for (const [blockKey, plan] of Object.entries(athlete.plans || {})) {
+    if (plan) await upsertPlan(athlete.id, blockKey, plan)
+  }
+}
+
+export async function deleteVideo(athleteId, videoId) {
+  const { error: logErr } = await supabase
+    .from('set_logs')
+    .update({ video_id: null })
+    .eq('athlete_id', athleteId)
+    .eq('video_id', videoId)
+  assertOk(logErr, 'clear log video_id')
+  const { error } = await supabase
+    .from('videos')
+    .delete()
+    .eq('id', videoId)
+    .eq('athlete_id', athleteId)
+  assertOk(error, 'delete video')
 }
 
 export async function persistAthleteStructure(athlete) {
   await upsertAthleteProfile(athlete)
   await syncBlocks(athlete.id, athlete.blocks || [])
+  // Also flush in-memory plans so a profile/block save cannot leave plan edits unsaved.
+  for (const [blockKey, plan] of Object.entries(athlete.plans || {})) {
+    if (!plan) continue
+    await upsertPlan(athlete.id, blockKey, plan)
+  }
 }
 
 export async function persistPlan(athleteId, blockKey, plan) {
