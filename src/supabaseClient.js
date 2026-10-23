@@ -621,7 +621,11 @@ function mintEmailCode() {
   return String(Math.floor(100000 + Math.random() * 900000))
 }
 
-/** Store a 6-digit signup code and attempt to email it via Supabase Auth OTP. */
+/**
+ * App-owned 6-digit signup codes (no Auth magic links).
+ * Magic-link emails redirected to localhost and broke signup — we only use typed codes.
+ * Optionally invokes the send-signup-code Edge Function to email the digits.
+ */
 export async function requestEmailVerification({ email, role, payload = {} }) {
   const normalized = String(email || '').trim().toLowerCase()
   if (!normalized || !normalized.includes('@')) {
@@ -652,20 +656,22 @@ export async function requestEmailVerification({ email, role, payload = {} }) {
     assertOk(insertErr, 'store verification code')
   }
 
-  // Prefer Supabase Auth email delivery when the project has SMTP / Auth email enabled.
-  let delivered = false
-  const { error: otpErr } = await supabase.auth.signInWithOtp({
-    email: normalized,
-    options: { shouldCreateUser: true },
-  })
-  if (!otpErr) delivered = true
-  else console.warn('[supabase] Auth OTP email not sent — using app verification code', otpErr.message)
+  let emailed = false
+  try {
+    const { data, error: fnErr } = await supabase.functions.invoke('send-signup-code', {
+      body: { email: normalized, code, role },
+    })
+    if (!fnErr && data?.ok) emailed = true
+    else if (fnErr) console.warn('[supabase] send-signup-code', fnErr.message || fnErr)
+  } catch (err) {
+    console.warn('[supabase] send-signup-code invoke failed', err?.message || err)
+  }
 
   return {
     email: normalized,
-    delivered,
-    // When Auth email is not configured, surface the code so signup still works.
-    previewCode: delivered ? null : code,
+    delivered: emailed,
+    // Always return the code so the UI can accept typed input even if email fails.
+    code,
   }
 }
 
@@ -674,7 +680,6 @@ export async function confirmEmailVerification({ email, code, role }) {
   const token = String(code || '').trim()
   if (!normalized || !token) throw new Error('Email and code are required')
 
-  // Accept either our stored code or a Supabase Auth OTP.
   const { data: rows, error } = await supabase
     .from('email_verifications')
     .select('*')
@@ -687,23 +692,13 @@ export async function confirmEmailVerification({ email, code, role }) {
   if (error && !isMissingColumnError(error)) assertOk(error, 'load verification')
 
   const match = (rows || []).find((r) => r.code === token)
-  if (match) {
-    await supabase
-      .from('email_verifications')
-      .update({ consumed_at: new Date().toISOString() })
-      .eq('id', match.id)
-    return { email: normalized, payload: match.payload || {}, via: 'app' }
-  }
+  if (!match) throw new Error('Invalid or expired code')
 
-  const { data: authData, error: authErr } = await supabase.auth.verifyOtp({
-    email: normalized,
-    token,
-    type: 'email',
-  })
-  if (authErr || !authData?.user) {
-    throw new Error('Invalid or expired code')
-  }
-  return { email: normalized, payload: {}, via: 'auth' }
+  await supabase
+    .from('email_verifications')
+    .update({ consumed_at: new Date().toISOString() })
+    .eq('id', match.id)
+  return { email: normalized, payload: match.payload || {}, via: 'app' }
 }
 
 export async function deleteAccount({ role, id }) {
