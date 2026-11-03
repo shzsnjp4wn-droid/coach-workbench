@@ -351,6 +351,7 @@ export function makeSetGroup(exercise, label = 'Top set', count = 1, reps = 5, r
     rpe,
     floor: '',
     cap: '',
+    goalKg: '',
     exercise: exercise?.name || 'Comp Squat',
     modifier: exercise?.modifier ?? 1,
   }
@@ -407,20 +408,50 @@ export function loadFromChart(pb, reps, rpe, modifier = 1) {
 }
 
 /**
- * Sheets-style range: prescribed RPE ± 1 (clamped), for a useful load band.
- * Goal is the exact chart load at the prescribed RPE.
+ * Sheets-style range: prescribed RPE ± 1, then clamped by coach floor/cap.
+ * Example: chart 170–190 with cap 185 → athlete sees 170–185.
  */
-export function loadRangeFromChart(pb, reps, rpe, modifier = 1) {
-  const goal = loadFromChart(pb, reps, rpe, modifier)
+export function loadRangeFromChart(pb, reps, rpe, modifier = 1, { floor = '', cap = '' } = {}) {
+  const chartGoal = loadFromChart(pb, reps, rpe, modifier)
   const lowRpe = Math.max(5, Number(rpe) - 1)
   const highRpe = Math.min(10, Number(rpe) + 1)
   const a = loadFromChart(pb, reps, lowRpe, modifier)
   const b = loadFromChart(pb, reps, highRpe, modifier)
-  return {
-    low: Math.min(a, b),
-    high: Math.max(a, b),
-    goal,
+  const chartLow = Math.min(a, b)
+  const chartHigh = Math.max(a, b)
+  const floorN = floor === '' || floor == null ? null : Number(floor)
+  const capN = cap === '' || cap == null ? null : Number(cap)
+  let low = chartLow
+  let high = chartHigh
+  if (Number.isFinite(floorN)) low = Math.max(low, floorN)
+  if (Number.isFinite(capN)) high = Math.min(high, capN)
+  if (low > high) {
+    // Degenerate bounds — prefer cap if both conflict.
+    if (Number.isFinite(capN)) low = high
+    else high = low
   }
+  let goal = chartGoal
+  if (Number.isFinite(floorN)) goal = Math.max(goal, floorN)
+  if (Number.isFinite(capN)) goal = Math.min(goal, capN)
+  return {
+    low,
+    high,
+    goal,
+    chartLow,
+    chartHigh,
+    chartGoal,
+  }
+}
+
+/** Confirm before allowing a cap above the auto chart high (usually a mistake vs raising PB). */
+export function confirmCapAboveChart(capValue, chartHigh) {
+  const capN = Number(capValue)
+  if (!Number.isFinite(capN) || !Number.isFinite(chartHigh)) return true
+  if (capN <= chartHigh) return true
+  return window.confirm(
+    `Cap ${capN} kg is above the calculated range high (${chartHigh} kg).\n\n`
+    + 'Set it anyway? If the athlete is simply stronger, raise their PB / e1RM instead.',
+  )
 }
 export function isPlaced(week, lift, rank) {
   return week.days.some((d) => dayItems(d).some((i) => i.kind === 'main' && i.lift === lift && i.rank === rank))

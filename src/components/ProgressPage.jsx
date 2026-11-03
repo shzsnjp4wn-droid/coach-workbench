@@ -32,7 +32,7 @@ function fmtGl(n) {
   return Number(n).toFixed(1)
 }
 
-export function ProgressPage({ athlete, viewer, stint, roster, onBodyweight }) {
+export function ProgressPage({ athlete, viewer, stint, roster, onBodyweight, onReplyInChat }) {
   const [focus, setFocus] = useState('all')
   const estimates = latestEstimates(athlete)
   const series = athlete.e1rmSeries || []
@@ -41,6 +41,10 @@ export function ProgressPage({ athlete, viewer, stint, roster, onBodyweight }) {
   const lifts = focus === 'all' ? ['squat', 'bench', 'deadlift'] : [focus]
   const { competition: competitionBests, accessories: accessoryBests } = listExerciseBests(athlete)
   const logs = [...(athlete.logs || [])].sort((a, b) => b.date.localeCompare(a.date) || (b.setNumber || 0) - (a.setNumber || 0)).slice(0, 12)
+  const notedLogs = [...(athlete.logs || [])]
+    .filter((l) => l.note && String(l.note).trim())
+    .sort((a, b) => b.date.localeCompare(a.date) || (b.setNumber || 0) - (a.setNumber || 0))
+    .slice(0, 20)
   const totalNow = estimatedTotalKg(athlete)
   const glNow = currentGl(athlete)
   const startGl = stint?.startDots ?? null
@@ -224,6 +228,44 @@ export function ProgressPage({ athlete, viewer, stint, roster, onBodyweight }) {
           </ResponsiveContainer>
         </div>
       </Card>
+      {viewer === 'coach' && (
+        <Card className="p-4">
+          <div className="text-[10px] uppercase tracking-[0.16em] text-cyan-300">Athlete notes</div>
+          <p className="mt-1 text-xs text-zinc-500">Session comments logged with sets — reply in chat to quote them.</p>
+          <div className="mt-3 space-y-2">
+            {notedLogs.map((log) => (
+              <div key={log.id} className="rounded-lg border border-white/10 bg-black/25 px-3 py-2">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <div className="text-sm text-zinc-200">{log.exercise}</div>
+                  <div className="font-mono text-[11px] text-zinc-500">
+                    {formatShortDay(log.date)} · set {log.setNumber} · {fmtKg(log.weight)}×{log.reps} @{log.rpe}
+                  </div>
+                </div>
+                <p className="mt-1 text-sm text-zinc-300 whitespace-pre-wrap">{log.note}</p>
+                {onReplyInChat && (
+                  <button
+                    type="button"
+                    className="mt-2 text-[11px] text-cyan-300"
+                    onClick={() => onReplyInChat({
+                      kind: 'note',
+                      text: log.note,
+                      caption: `${log.exercise} · ${fmtKg(log.weight)}×${log.reps} @${log.rpe}`,
+                      date: log.date,
+                      logId: log.id,
+                    })}
+                  >
+                    Reply in chat
+                  </button>
+                )}
+              </div>
+            ))}
+            {notedLogs.length === 0 && (
+              <p className="text-sm text-zinc-600">No athlete notes yet.</p>
+            )}
+          </div>
+        </Card>
+      )}
+
       <Card className="overflow-hidden">
         <div className="border-b border-white/8 px-4 py-3 text-sm text-zinc-300">Recent set estimates</div>
         <div className="overflow-x-auto">
@@ -236,23 +278,25 @@ export function ProgressPage({ athlete, viewer, stint, roster, onBodyweight }) {
                 <th className="px-2 py-2 font-medium">Kg</th>
                 <th className="px-2 py-2 font-medium">Reps</th>
                 <th className="px-2 py-2 font-medium">RPE</th>
-                <th className="px-4 py-2 font-medium">e1RM</th>
+                <th className="px-2 py-2 font-medium">e1RM</th>
+                <th className="px-4 py-2 font-medium">Note</th>
               </tr>
             </thead>
             <tbody>
               {logs.map((log) => (
-                <tr key={log.id} className="border-t border-white/6">
+                <tr key={log.id} className="border-t border-white/6 align-top">
                   <td className="px-4 py-2 text-zinc-400">{formatShortDay(log.date)}</td>
                   <td className="px-2 py-2">{log.setNumber}</td>
                   <td className="px-2 py-2">{log.exercise}</td>
                   <td className="px-2 py-2 font-mono">{fmtKg(log.weight)}</td>
                   <td className="px-2 py-2 font-mono">{log.reps}</td>
                   <td className="px-2 py-2 font-mono">{log.rpe}</td>
-                  <td className="px-4 py-2 font-mono text-lime-300">{log.e1 ? fmtKg(log.e1) : '—'}</td>
+                  <td className="px-2 py-2 font-mono text-lime-300">{log.e1 ? fmtKg(log.e1) : '—'}</td>
+                  <td className="max-w-[220px] px-4 py-2 text-xs text-zinc-400">{log.note || '—'}</td>
                 </tr>
               ))}
               {logs.length === 0 && (
-                <tr><td colSpan={7} className="px-4 py-6 text-zinc-500">No sets logged yet.</td></tr>
+                <tr><td colSpan={8} className="px-4 py-6 text-zinc-500">No sets logged yet.</td></tr>
               )}
             </tbody>
           </table>
