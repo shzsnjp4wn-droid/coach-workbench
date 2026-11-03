@@ -264,26 +264,30 @@ export function AthleteToday({
 
                 <div className="mt-3 rounded-lg border border-white/8 bg-black/25 px-3 py-2">
                   <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-500">Prescribed</div>
-                  <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 font-mono text-sm text-zinc-200">
-                    <span>{row.prescribedRepsLabel || row.prescribedReps} reps</span>
-                    <span>RPE {row.prescribedRpe}</span>
-                  </div>
-                  {(row.loadLow != null || row.prescribedKg != null) && (
-                    <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 font-mono text-sm">
-                      {row.loadLow != null && row.loadHigh != null && (
-                        <span className="text-zinc-300">
-                          <span className="text-[10px] uppercase tracking-wider text-zinc-500">Range </span>
-                          {fmtKg(row.loadLow)}–{fmtKg(row.loadHigh)}
-                        </span>
-                      )}
-                      {row.prescribedKg != null && (
-                        <span className="text-lime-200">
-                          <span className="text-[10px] uppercase tracking-wider text-zinc-500">Goal </span>
-                          {fmtKg(row.prescribedKg)} kg
-                        </span>
-                      )}
+                  <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div>
+                      <div className="text-[9px] uppercase tracking-wider text-zinc-500">Reps</div>
+                      <div className="font-mono text-sm text-zinc-100">{row.prescribedRepsLabel || row.prescribedReps}</div>
                     </div>
-                  )}
+                    <div>
+                      <div className="text-[9px] uppercase tracking-wider text-zinc-500">RPE</div>
+                      <div className="font-mono text-sm text-zinc-100">{row.prescribedRpe}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase tracking-wider text-zinc-500">Range</div>
+                      <div className="font-mono text-sm text-zinc-100">
+                        {row.loadLow != null && row.loadHigh != null
+                          ? `${fmtKg(row.loadLow)}–${fmtKg(row.loadHigh)}`
+                          : '—'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] uppercase tracking-wider text-zinc-500">Goal</div>
+                      <div className="font-mono text-sm text-lime-200">
+                        {row.prescribedKg != null ? `${fmtKg(row.prescribedKg)} kg` : '—'}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="mt-3">

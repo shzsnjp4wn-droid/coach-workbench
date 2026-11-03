@@ -106,9 +106,12 @@ export function MesoSheet({
                                 {(g.label || '').trim() ? (
                                   <div className="truncate text-[10px] text-zinc-500">{g.label}</div>
                                 ) : null}
-                                <div className="mt-0.5 truncate font-mono text-[11px] text-zinc-200">
-                                  {formatPrescription(g)}
-                                </div>
+                                {/* Read-only: one prescription line. Edit mode uses steppers only — no duplicate text. */}
+                                {readOnly && (
+                                  <div className="mt-0.5 truncate font-mono text-[11px] text-zinc-200">
+                                    {formatPrescription(g)}
+                                  </div>
+                                )}
                               </div>
                               <div className="font-mono text-[11px] text-zinc-300">
                                 {range ? `${fmtKg(range.low)}–${fmtKg(range.high)}` : '—'}
