@@ -104,6 +104,7 @@ export function createAthleteProfile({ name, code, sex = 'male', bodyweightKg = 
     startDate: mondayOf(todayISO()),
     pbs,
     e1rm: { ...pbs },
+    exerciseBests: {},
     accessoryLibrary: accessoryLibrary(),
     liftLibrary: defaultLiftLibrary(),
     blocks: [
@@ -117,6 +118,21 @@ export function createAthleteProfile({ name, code, sex = 'male', bodyweightKg = 
     e1rmSeries: [],
     scheduleOverrides: [],
   }
+}
+
+/** True when this logged set currently holds the e1RM personal best for its lift/exercise. */
+export function isLogPersonalBest(athlete, log) {
+  if (!athlete || !log) return false
+  const key = exerciseBestKey(log)
+  if (!key) return false
+  const bests = athlete.exerciseBests && Object.keys(athlete.exerciseBests).length
+    ? athlete.exerciseBests
+    : rebuildExerciseBestsFromLogs(athlete.logs)
+  const best = bests[key]
+  if (!best) return false
+  if (best.logId && log.id) return best.logId === log.id
+  return Number(best.e1) === Number(log.e1 ?? e1FromSet(log.weight, log.reps, log.rpe))
+    && best.date === log.date
 }
 
 /** Pass a DB-verified `code` from allocateUniqueUserCode. */
@@ -408,6 +424,98 @@ export function e1FromSet(weight, reps, rpe) {
   if (!pct) return null
   return roundPlate(weight / pct)
 }
+
+/** Stable key for PB tracking — competition lifts roll up by lift id; accessories by exercise name. */
+export function exerciseBestKey({ lift, exercise }) {
+  if (lift === 'squat' || lift === 'bench' || lift === 'deadlift') return lift
+  const name = String(exercise || '').trim()
+  return name || null
+}
+
+export function exerciseBestLabel(key, record) {
+  if (key === 'squat' || key === 'bench' || key === 'deadlift') return LIFT_LABEL[key]
+  return record?.exercise || key
+}
+
+/**
+ * Record a set as a personal best when its e1RM beats the previous best for that lift/exercise.
+ * Competition lifts (squat/bench/deadlift) share one PB each; every accessory tracks separately.
+ */
+export function applySetToExerciseBests(bests, { lift, exercise, weight, reps, rpe, e1, date, logId = null }) {
+  const key = exerciseBestKey({ lift, exercise })
+  const estimate = e1 ?? e1FromSet(weight, reps, rpe)
+  if (!key || estimate == null || !Number.isFinite(Number(estimate))) {
+    return { bests: bests || {}, improved: false, record: null, key: null }
+  }
+  const next = { ...(bests || {}) }
+  const prev = next[key]
+  if (prev && Number(prev.e1) >= Number(estimate)) {
+    return { bests: next, improved: false, record: prev, key }
+  }
+  const record = {
+    e1: Number(estimate),
+    weight: Number(weight),
+    reps: Number(reps),
+    rpe: Number(rpe),
+    date,
+    exercise: String(exercise || LIFT_LABEL[key] || key),
+    lift: lift || null,
+    logId: logId || null,
+  }
+  next[key] = record
+  return { bests: next, improved: true, record, key }
+}
+
+/** Rebuild tracked PBs from set logs (weight × reps × RPE → e1RM). */
+export function rebuildExerciseBestsFromLogs(logs) {
+  let bests = {}
+  const sorted = [...(logs || [])].sort((a, b) => {
+    const byDate = String(a.date || '').localeCompare(String(b.date || ''))
+    if (byDate) return byDate
+    return Number(a.setNumber || 0) - Number(b.setNumber || 0)
+  })
+  for (const log of sorted) {
+    const e1 = log.e1 ?? e1FromSet(log.weight, log.reps, log.rpe)
+    if (e1 == null) continue
+    bests = applySetToExerciseBests(bests, { ...log, e1 }).bests
+  }
+  return bests
+}
+
+export function listExerciseBests(athlete) {
+  const stored = athlete?.exerciseBests && Object.keys(athlete.exerciseBests).length
+    ? athlete.exerciseBests
+    : rebuildExerciseBestsFromLogs(athlete?.logs)
+  const competition = ['squat', 'bench', 'deadlift'].map((lift) => {
+    const record = stored[lift] || null
+    const fallbackE1 = latestEstimates(athlete)[lift]
+    return {
+      key: lift,
+      kind: 'competition',
+      label: LIFT_LABEL[lift],
+      record: record || (fallbackE1 ? {
+        e1: fallbackE1,
+        weight: null,
+        reps: null,
+        rpe: null,
+        date: null,
+        exercise: LIFT_LABEL[lift],
+        lift,
+      } : null),
+    }
+  })
+  const accessories = Object.entries(stored)
+    .filter(([key]) => key !== 'squat' && key !== 'bench' && key !== 'deadlift')
+    .map(([key, record]) => ({
+      key,
+      kind: 'accessory',
+      label: exerciseBestLabel(key, record),
+      record,
+    }))
+    .sort((a, b) => Number(b.record?.e1 || 0) - Number(a.record?.e1 || 0))
+  return { competition, accessories, all: [...competition, ...accessories] }
+}
+
 export function pushE1rm(series, lift, e1, date) {
   const next = (series || []).map((p) => ({ ...p }))
   const idx = next.findIndex((p) => p.date === date)
@@ -429,10 +537,11 @@ export function pushE1rm(series, lift, e1, date) {
 }
 export function latestEstimates(athlete) {
   const last = athlete.e1rmSeries?.[athlete.e1rmSeries.length - 1]
+  const tracked = athlete.exerciseBests || {}
   return {
-    squat: last?.squat ?? athlete.e1rm.squat,
-    bench: last?.bench ?? athlete.e1rm.bench,
-    deadlift: last?.deadlift ?? athlete.e1rm.deadlift,
+    squat: last?.squat ?? tracked.squat?.e1 ?? athlete.e1rm?.squat,
+    bench: last?.bench ?? tracked.bench?.e1 ?? athlete.e1rm?.bench,
+    deadlift: last?.deadlift ?? tracked.deadlift?.e1 ?? athlete.e1rm?.deadlift,
   }
 }
 export function totalOf(estimates) {
@@ -582,7 +691,7 @@ function logFromRow(row, blockId, weekIndex, dayIndex, date, videoId) {
     weight,
     reps,
     rpe,
-    e1: row.lift ? e1FromSet(weight, reps, rpe) : null,
+    e1: e1FromSet(weight, reps, rpe),
     date,
     videoId,
   }
@@ -617,6 +726,7 @@ function accessoryLibrary() {
 
 function makeAthlete(partial) {
   const e1rm = partial.e1rm || partial.pbs
+  const logs = demoLogs(partial.pbs)
   return {
     planningMode: 'meet',
     blockWeeks: 16,
@@ -625,13 +735,15 @@ function makeAthlete(partial) {
     startDate: mondayOf(todayISO()),
     scheduleOverrides: [],
     plans: {},
-    logs: demoLogs(partial.pbs),
+    logs,
     videos: [],
     e1rm,
     e1rmSeries: runningSeries(e1rm),
+    exerciseBests: rebuildExerciseBestsFromLogs(logs),
     coachId: null,
     ...partial,
     e1rm: partial.e1rm || partial.pbs,
+    exerciseBests: partial.exerciseBests || rebuildExerciseBestsFromLogs(partial.logs || logs),
   }
 }
 

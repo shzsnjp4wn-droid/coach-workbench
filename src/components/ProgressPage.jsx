@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Trophy } from 'lucide-react'
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import {
   LIFT_LABEL,
@@ -9,6 +10,7 @@ import {
   fmtKg,
   formatShortDay,
   latestEstimates,
+  listExerciseBests,
   totalOf,
 } from '../domain'
 import { Card } from './ui'
@@ -37,6 +39,7 @@ export function ProgressPage({ athlete, viewer, stint, roster, onBodyweight }) {
   const data = series.map((p) => ({ ...p, label: formatShortDay(p.date) }))
   const first = series[0]
   const lifts = focus === 'all' ? ['squat', 'bench', 'deadlift'] : [focus]
+  const { competition: competitionBests, accessories: accessoryBests } = listExerciseBests(athlete)
   const logs = [...(athlete.logs || [])].sort((a, b) => b.date.localeCompare(a.date) || (b.setNumber || 0) - (a.setNumber || 0)).slice(0, 12)
   const totalNow = estimatedTotalKg(athlete)
   const glNow = currentGl(athlete)
@@ -157,6 +160,49 @@ export function ProgressPage({ athlete, viewer, stint, roster, onBodyweight }) {
           </div>
         </Card>
       </div>
+
+      <Card className="p-4">
+        <div className="flex items-center gap-2">
+          <Trophy size={14} className="text-amber-300" />
+          <div className="text-[10px] uppercase tracking-[0.16em] text-amber-200/80">Personal bests</div>
+        </div>
+        <p className="mt-1 text-xs text-zinc-500">Best e1RM from logged weight × reps × RPE. Comp lifts and every accessory track separately.</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          {competitionBests.map((row) => (
+            <div key={row.key} className="rounded-lg border border-amber-300/20 bg-amber-400/5 px-3 py-2">
+              <div className="text-[10px] uppercase tracking-widest text-zinc-500">{row.label}</div>
+              <div className="font-display text-2xl text-white">{row.record?.e1 != null ? fmtKg(row.record.e1) : '—'}<span className="ml-1 text-sm text-zinc-500">kg e1</span></div>
+              {row.record?.weight != null && (
+                <div className="font-mono text-[11px] text-zinc-500">
+                  {fmtKg(row.record.weight)} × {row.record.reps} @ {row.record.rpe}
+                  {row.record.date ? ` · ${formatShortDay(row.record.date)}` : ''}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        {accessoryBests.length > 0 && (
+          <div className="mt-3 grid gap-1">
+            {accessoryBests.map((row) => (
+              <div key={row.key} className="flex items-center justify-between gap-3 rounded-lg border border-white/8 px-3 py-2 text-sm">
+                <div className="min-w-0">
+                  <div className="truncate text-zinc-200">{row.label}</div>
+                  {row.record?.weight != null && (
+                    <div className="font-mono text-[11px] text-zinc-500">
+                      {fmtKg(row.record.weight)} × {row.record.reps} @ {row.record.rpe}
+                      {row.record.date ? ` · ${formatShortDay(row.record.date)}` : ''}
+                    </div>
+                  )}
+                </div>
+                <div className="shrink-0 font-mono text-amber-200">{fmtKg(row.record?.e1)} kg</div>
+              </div>
+            ))}
+          </div>
+        )}
+        {accessoryBests.length === 0 && (
+          <p className="mt-3 text-xs text-zinc-600">Accessory PBs appear here once you log them.</p>
+        )}
+      </Card>
       <Card className="p-4">
         <div className="mb-3 flex flex-wrap gap-2">
           {[['all', 'All'], ['squat', 'Squat'], ['bench', 'Bench'], ['deadlift', 'Deadlift']].map(([id, label]) => (

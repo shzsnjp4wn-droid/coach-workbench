@@ -1,15 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { Check, ChevronLeft, ChevronRight, Dumbbell, Upload, Video, X } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Dumbbell, Trophy, Upload, Video, X } from 'lucide-react'
 import {
   LIFT_TONE,
   RPE_OPTIONS,
   WEEKDAYS,
   calendarDate,
   dayTitle,
+  e1FromSet,
   expandDaySets,
   findLog,
   formatMeetDate,
   highCns,
+  isLogPersonalBest,
   isoFromDate,
   sessionAt,
   setCaption,
@@ -224,6 +226,12 @@ export function AthleteToday({
             const video = existing?.videoId ? client.videos.find((v) => v.id === existing.videoId) : null
             const uploaded = isDurableUrl(video?.url)
             const pendingClip = Boolean(draft.media)
+            const personalBest = existing ? isLogPersonalBest(client, existing) : false
+            const draftE1 = e1FromSet(
+              Number(draft.weight || row.prescribedKg),
+              Number(draft.reps || row.prescribedReps),
+              Number(draft.rpe || row.prescribedRpe),
+            )
             const caption = setCaption({
               setNumber: row.setNumber,
               reps: draft.reps || row.prescribedReps,
@@ -237,7 +245,16 @@ export function AthleteToday({
                     <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-500">Set {row.setNumber}{row.count > 1 ? ` · ${row.label} ${row.indexInGroup + 1}/${row.count}` : ''}</div>
                     <div className={`mt-1 inline-flex rounded-md border px-2 py-0.5 text-sm ${row.lift ? LIFT_TONE[row.lift] : 'border-white/10 bg-white/5 text-zinc-200'}`}>{row.exercise}</div>
                   </div>
-                  {existing && <div className="rounded-full border border-lime-400/30 px-2 py-0.5 text-[10px] uppercase tracking-wider text-lime-300">Logged</div>}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {personalBest ? (
+                      <div className="inline-flex items-center gap-1 rounded-full border border-amber-300/40 bg-amber-400/15 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-100">
+                        <Trophy size={11} className="text-amber-300" />
+                        Personal best
+                      </div>
+                    ) : existing ? (
+                      <div className="rounded-full border border-lime-400/30 px-2 py-0.5 text-[10px] uppercase tracking-wider text-lime-300">Logged</div>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className="mt-3 rounded-lg border border-white/8 bg-black/25 px-3 py-2">
@@ -348,6 +365,9 @@ export function AthleteToday({
                 <div className="mt-3 rounded-lg border border-white/8 bg-black/30 px-3 py-2">
                   <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-500">Video caption</div>
                   <div className="font-display text-xl text-white">{caption}</div>
+                  {draftE1 != null && (
+                    <div className="mt-1 font-mono text-xs text-zinc-500">e1RM ~ {fmtKg(draftE1)} kg</div>
+                  )}
                 </div>
               </Card>
             )

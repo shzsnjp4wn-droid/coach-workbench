@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { makeAthleteCode, makeCoachCode } from './domain'
+import { e1FromSet, makeAthleteCode, makeCoachCode, rebuildExerciseBestsFromLogs } from './domain'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -124,8 +124,14 @@ export function mapAthleteProfile(row) {
     planningMode: row.planning_mode || 'meet',
     blockWeeks: row.block_weeks ?? 16,
     startDate: row.start_date,
-    pbs: row.pbs || { squat: 0, bench: 0, deadlift: 0 },
+    pbs: {
+      squat: Number(row.pbs?.squat) || 0,
+      bench: Number(row.pbs?.bench) || 0,
+      deadlift: Number(row.pbs?.deadlift) || 0,
+    },
     e1rm: row.e1rm || { squat: 0, bench: 0, deadlift: 0 },
+    // Tracked PBs live under pbs.tracked so we don't need a new column.
+    exerciseBests: (row.pbs && typeof row.pbs.tracked === 'object' && row.pbs.tracked) || {},
     accessoryLibrary: row.accessory_library || [],
     liftLibrary: row.lift_library || {},
   }
@@ -150,6 +156,10 @@ export function mapStintRow(row) {
 }
 
 function mapLogRow(row) {
+  const weight = row.weight == null ? null : Number(row.weight)
+  const reps = row.reps == null ? null : Number(row.reps)
+  const rpe = row.rpe == null ? null : Number(row.rpe)
+  const storedE1 = row.e1 == null ? null : Number(row.e1)
   return {
     id: row.id,
     setKey: row.set_key,
@@ -160,10 +170,11 @@ function mapLogRow(row) {
     exercise: row.exercise,
     label: row.label,
     lift: row.lift,
-    weight: row.weight == null ? null : Number(row.weight),
-    reps: row.reps == null ? null : Number(row.reps),
-    rpe: row.rpe == null ? null : Number(row.rpe),
-    e1: row.e1 == null ? null : Number(row.e1),
+    weight,
+    reps,
+    rpe,
+    // Backfill e1 for accessories logged before universal PB tracking.
+    e1: storedE1 ?? e1FromSet(weight, reps, rpe),
     date: row.date,
     videoId: row.video_id,
     coachId: row.coach_id ?? null,
@@ -355,11 +366,15 @@ export async function fetchWorkspace() {
       }
     }
 
+    const athleteLogs = logs.filter((row) => row.athlete_id === profile.id).map(mapLogRow)
+    const storedBests = profile.exerciseBests && Object.keys(profile.exerciseBests).length
+      ? profile.exerciseBests
+      : null
     athletes[profile.id] = {
       ...profile,
       blocks: athleteBlocks,
       plans: athletePlans,
-      logs: logs.filter((row) => row.athlete_id === profile.id).map(mapLogRow),
+      logs: athleteLogs,
       videos: videos.filter((row) => row.athlete_id === profile.id).map(mapVideoRow),
       e1rmSeries: series
         .filter((row) => row.athlete_id === profile.id)
@@ -370,6 +385,7 @@ export async function fetchWorkspace() {
           deadlift: row.deadlift == null ? null : Number(row.deadlift),
           coachId: row.coach_id ?? null,
         })),
+      exerciseBests: storedBests || rebuildExerciseBestsFromLogs(athleteLogs),
       scheduleOverrides: overrides
         .filter((row) => row.athlete_id === profile.id)
         .map(mapOverrideRow),
@@ -410,7 +426,12 @@ export async function upsertAthleteProfile(athlete) {
     planning_mode: athlete.planningMode,
     block_weeks: athlete.blockWeeks,
     start_date: athlete.startDate,
-    pbs: athlete.pbs,
+    pbs: {
+      squat: Number(athlete.pbs?.squat) || 0,
+      bench: Number(athlete.pbs?.bench) || 0,
+      deadlift: Number(athlete.pbs?.deadlift) || 0,
+      tracked: athlete.exerciseBests || {},
+    },
     e1rm: athlete.e1rm,
     accessory_library: athlete.accessoryLibrary,
     lift_library: athlete.liftLibrary,
@@ -700,21 +721,24 @@ async function uploadViaResumable(path, blob, contentType) {
 }
 
 export async function uploadMedia(athleteId, objectId, media) {
-  let blob = media?.file instanceof Blob ? media.file : null
-  if (!blob && media?.url) {
-    try {
-      blob = await fetch(media.url).then((r) => r.blob())
-    } catch (err) {
-      throw new Error(`upload media: could not read file (${err?.message || err})`)
-    }
-  }
+  // Shrink phone clips before Storage (720p / ~1 Mbps); images → JPEG.
+  const { compressMediaForUpload } = await import('./mediaCompress')
+  const prepared = await compressMediaForUpload(media)
+  let blob = prepared.file
   if (!blob) throw new Error('upload media: missing local file — re-attach the clip and try again')
 
-  const contentType = media.type || blob.type || 'application/octet-stream'
-  const ext = (media.name && media.name.includes('.'))
-    ? media.name.split('.').pop()
+  const contentType = prepared.type || blob.type || 'application/octet-stream'
+  const name = prepared.name || media?.name || 'clip'
+  const ext = name.includes('.')
+    ? name.split('.').pop()
     : (contentType.split('/')[1] || 'bin')
   const path = `${athleteId}/${objectId}.${ext}`
+
+  if (prepared.compressed) {
+    console.info(
+      `[supabase] compressed media ${prepared.originalSize} → ${blob.size} bytes (${ext})`,
+    )
+  }
 
   try {
     if (blob.size >= RESUMABLE_THRESHOLD) {
@@ -730,9 +754,14 @@ export async function uploadMedia(athleteId, objectId, media) {
       if (upError) throw upError
     }
   } catch (err) {
+    const detail = formatSupabaseError(err, 'upload media')
+    if (/413|maximum size|too large|payload/i.test(detail)) {
+      throw new Error(
+        `${detail} — clip is still over the Storage limit after compression. Trim the video or use a shorter take.`,
+      )
+    }
     throw new Error(
-      formatSupabaseError(err, 'upload media')
-      + ' — check supabase/storage.sql and that the media bucket allows anon uploads.',
+      `${detail} — check supabase/storage.sql and that the media bucket allows anon uploads.`,
     )
   }
 
