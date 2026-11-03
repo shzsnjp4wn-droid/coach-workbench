@@ -175,6 +175,7 @@ function mapLogRow(row) {
     rpe,
     // Backfill e1 for accessories logged before universal PB tracking.
     e1: storedE1 ?? e1FromSet(weight, reps, rpe),
+    note: row.note || '',
     date: row.date,
     videoId: row.video_id,
     coachId: row.coach_id ?? null,
@@ -218,12 +219,24 @@ function mapOverrideRow(row) {
 }
 
 function mapMessageRow(row) {
+  const raw = row.attachment
+  const quote = raw?.quote || null
+  const file = raw && (raw.url || raw.name) && raw.kind !== 'none'
+    ? {
+      name: raw.name || '',
+      type: raw.type || '',
+      size: raw.size || 0,
+      kind: raw.kind || 'file',
+      url: raw.url || '',
+    }
+    : null
   return {
     id: row.id,
     from: row.from_role,
     text: row.text || '',
     at: row.at,
-    attachment: row.attachment,
+    attachment: file,
+    quote,
     unread: Boolean(row.unread),
     coachId: row.coach_id ?? null,
   }
@@ -523,28 +536,32 @@ export async function upsertPlan(athleteId, blockKey, plan, coachId) {
 
 export async function upsertSetLog(athleteId, log, coachId) {
   const cid = requireCoachId(coachId || log.coachId, 'upsert set_log')
-  const { data, error } = await supabase
+  const base = {
+    id: log.id,
+    athlete_id: athleteId,
+    coach_id: cid,
+    set_key: log.setKey,
+    block_key: log.blockId,
+    week_index: log.weekIndex,
+    day_index: log.dayIndex,
+    set_number: log.setNumber,
+    exercise: log.exercise,
+    label: log.label,
+    lift: log.lift,
+    weight: log.weight,
+    reps: log.reps,
+    rpe: log.rpe,
+    e1: log.e1,
+    date: log.date,
+    video_id: log.videoId,
+  }
+  let { data, error } = await supabase
     .from('set_logs')
-    .upsert({
-      id: log.id,
-      athlete_id: athleteId,
-      coach_id: cid,
-      set_key: log.setKey,
-      block_key: log.blockId,
-      week_index: log.weekIndex,
-      day_index: log.dayIndex,
-      set_number: log.setNumber,
-      exercise: log.exercise,
-      label: log.label,
-      lift: log.lift,
-      weight: log.weight,
-      reps: log.reps,
-      rpe: log.rpe,
-      e1: log.e1,
-      date: log.date,
-      video_id: log.videoId,
-    }, { onConflict: 'id' })
+    .upsert({ ...base, note: log.note || '' }, { onConflict: 'id' })
     .select('id')
+  if (error && isMissingColumnError(error)) {
+    ;({ data, error } = await supabase.from('set_logs').upsert(base, { onConflict: 'id' }).select('id'))
+  }
   assertOk(error, 'upsert set_log')
   assertWrote(data, 'upsert set_log')
 }

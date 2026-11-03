@@ -10,8 +10,8 @@ export function Card({ className = '', children }) {
 }
 
 /**
- * Compact +/− stepper for sets / reps / RPE pacing.
- * Large hit targets so coaches can nudge values quickly without typing.
+ * Full-width +/− stepper for sets / reps / RPE pacing.
+ * Grid keeps both buttons visible even in narrow mesocycle columns.
  */
 export function Stepper({
   value,
@@ -30,15 +30,14 @@ export function Stepper({
     const decimals = String(step).includes('.') ? 1 : 0
     onChange(Number(next.toFixed(decimals)))
   }
-  const pad = size === 'lg' ? 'min-h-9 min-w-9 text-base' : 'min-h-8 min-w-8 text-sm'
-  const field = size === 'lg' ? 'w-11 text-sm' : 'w-9 text-xs'
+  const tall = size === 'lg' ? 'min-h-10 text-base' : 'min-h-9 text-sm'
   return (
-    <div className="inline-flex items-stretch overflow-hidden rounded-md border border-white/15 bg-[#151821]">
+    <div className={`grid w-full grid-cols-[1fr_auto_1fr] items-stretch overflow-hidden rounded-md border border-white/15 bg-[#151821] ${tall}`}>
       <button
         type="button"
         aria-label="Decrease"
         onClick={() => bump(-1)}
-        className={`${pad} border-r border-white/10 text-zinc-300 hover:bg-white/10 active:bg-white/15`}
+        className="border-r border-white/10 px-2 font-semibold text-zinc-200 hover:bg-white/10 active:bg-cyan-400/20"
       >
         −
       </button>
@@ -54,13 +53,13 @@ export function Stepper({
           if (max != null) clamped = Math.min(max, clamped)
           onChange(clamped)
         }}
-        className={`${field} bg-transparent text-center font-mono text-zinc-100 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
+        className="w-12 bg-transparent text-center font-mono text-zinc-100 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
       />
       <button
         type="button"
         aria-label="Increase"
         onClick={() => bump(1)}
-        className={`${pad} border-l border-white/10 text-zinc-300 hover:bg-white/10 active:bg-white/15`}
+        className="border-l border-white/10 px-2 font-semibold text-zinc-200 hover:bg-white/10 active:bg-cyan-400/20"
       >
         +
       </button>

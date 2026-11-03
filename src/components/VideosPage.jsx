@@ -11,7 +11,7 @@ const FILTERS = [
   ['accessory', 'Accessories'],
 ]
 
-export function VideosPage({ athlete, role, onOpenDay }) {
+export function VideosPage({ athlete, role, onOpenDay, onReplyInChat }) {
   const [filter, setFilter] = useState('all')
   const videos = [...(athlete.videos || [])].sort((a, b) => b.date.localeCompare(a.date) || a.setNumber - b.setNumber)
   const filtered = videos.filter((v) => {
@@ -79,9 +79,27 @@ export function VideosPage({ athlete, role, onOpenDay }) {
                   <div className="text-xs text-zinc-500">
                     {video.weekIndex != null ? `${video.blockName} · Week ${video.weekIndex + 1} · ${WEEKDAYS[video.dayIndex]}` : video.blockName}
                   </div>
-                  {video.weekIndex != null && (
-                    <button type="button" onClick={() => onOpenDay(video)} className="mt-2 text-xs text-cyan-300">Open this day</button>
-                  )}
+                  <div className="mt-2 flex flex-wrap gap-3">
+                    {video.weekIndex != null && (
+                      <button type="button" onClick={() => onOpenDay(video)} className="text-xs text-cyan-300">Open this day</button>
+                    )}
+                    {onReplyInChat && video.url && (
+                      <button
+                        type="button"
+                        onClick={() => onReplyInChat({
+                          kind: 'video',
+                          videoUrl: video.url,
+                          caption: video.caption,
+                          exercise: video.exercise,
+                          date: video.date,
+                          videoId: video.id,
+                        })}
+                        className="text-xs text-zinc-400 hover:text-white"
+                      >
+                        Reply in chat
+                      </button>
+                    )}
+                  </div>
                 </div>
               </Card>
             ))}

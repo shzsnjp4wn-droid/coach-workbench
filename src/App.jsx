@@ -604,7 +604,7 @@ export default function App() {
     }
   }
 
-  async function logSet({ block, weekIndex, dayIndex, row, weight, reps, rpe, shifted, date, media }) {
+  async function logSet({ block, weekIndex, dayIndex, row, weight, reps, rpe, shifted, date, media, note = '' }) {
     const caption = setCaption({ setNumber: row.setNumber, reps, weight, rpe })
     // Every logged set (comp lift or accessory) gets an e1RM from weight × reps × RPE.
     const e1 = e1FromSet(weight, reps, rpe)
@@ -695,6 +695,7 @@ export default function App() {
         reps,
         rpe,
         e1,
+        note: String(note || '').trim(),
         date,
         videoId,
         coachId: cid,
@@ -830,7 +831,7 @@ export default function App() {
     })
   }, [role, coach?.id])
 
-  async function sendMessage(id, from, text, attachment) {
+  async function sendMessage(id, from, text, attachment, quote = null) {
     const cid = athletesRef.current[id]?.coachId || coach?.id
     if (!cid) {
       setToast('Connect coach ↔ athlete before messaging')
@@ -854,21 +855,27 @@ export default function App() {
         url: publicUrl || '',
       }
     }
+    const payloadAttachment = (storedAttachment || quote)
+      ? { ...(storedAttachment || { kind: 'none' }), quote: quote || undefined }
+      : null
     const msg = {
       id: msgId,
       from,
       text: text.trim(),
       at: new Date().toISOString(),
       attachment: storedAttachment,
+      quote: quote || null,
       unread: true,
       coachId: cid,
     }
+    // Persist quote inside attachment jsonb (no schema change).
+    const persistMsg = { ...msg, attachment: payloadAttachment }
     const nextThread = [...(messagesRef.current[id] || []), msg]
     const nextMessages = { ...messagesRef.current, [id]: nextThread }
     messagesRef.current = nextMessages
     setMessages(nextMessages)
     try {
-      await insertMessage(id, msg, cid)
+      await insertMessage(id, persistMsg, cid)
       setSaveState('saved')
     } catch (err) {
       console.error('[supabase] sendMessage failed', err)
@@ -885,6 +892,19 @@ export default function App() {
       stage: role === 'coach' ? 'day' : undefined,
     })
     setPage(role === 'athlete' ? 'today' : 'programme')
+  }
+
+  async function replyInChat(quote) {
+    if (!athleteId) return
+    const prompt = quote?.kind === 'video'
+      ? 'Form notes: '
+      : 'Re: your note — '
+    const text = window.prompt(quote?.kind === 'video' ? 'Reply about this clip' : 'Reply to this note', prompt)
+    if (text == null) return
+    if (!String(text).trim()) return
+    await sendMessage(athleteId, role, text, null, quote)
+    setPage('messages')
+    setToast('Reply posted in chat')
   }
 
   function setStartDate(value) {
@@ -1109,6 +1129,8 @@ export default function App() {
             onSelectDay={setSelectedDay}
             onCommit={logSet}
             onRemoveVideo={removeLoggedVideo}
+            viewerRole={role}
+            onReplyInChat={role === 'coach' ? replyInChat : null}
           />
         )}
         {role === 'athlete' && page === 'programme' && (
@@ -1151,7 +1173,14 @@ export default function App() {
             onMarkRead={markRead}
           />
         )}
-        {page === 'videos' && <VideosPage athlete={athlete} role={role} onOpenDay={openVideoDay} />}
+        {page === 'videos' && (
+          <VideosPage
+            athlete={athlete}
+            role={role}
+            onOpenDay={openVideoDay}
+            onReplyInChat={role === 'coach' ? replyInChat : null}
+          />
+        )}
       </main>
       {showAccountSettings && (
         <AccountSettings
