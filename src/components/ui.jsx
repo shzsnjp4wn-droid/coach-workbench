@@ -9,6 +9,65 @@ export function Card({ className = '', children }) {
   return <section className={`rounded-xl border border-white/8 bg-[#0e1016] ${className}`}>{children}</section>
 }
 
+/**
+ * Compact +/− stepper for sets / reps / RPE pacing.
+ * Large hit targets so coaches can nudge values quickly without typing.
+ */
+export function Stepper({
+  value,
+  onChange,
+  step = 1,
+  min = null,
+  max = null,
+  size = 'md',
+}) {
+  const n = Number(value)
+  const safe = Number.isFinite(n) ? n : 0
+  function bump(dir) {
+    let next = safe + dir * step
+    if (min != null) next = Math.max(min, next)
+    if (max != null) next = Math.min(max, next)
+    const decimals = String(step).includes('.') ? 1 : 0
+    onChange(Number(next.toFixed(decimals)))
+  }
+  const pad = size === 'lg' ? 'min-h-9 min-w-9 text-base' : 'min-h-8 min-w-8 text-sm'
+  const field = size === 'lg' ? 'w-11 text-sm' : 'w-9 text-xs'
+  return (
+    <div className="inline-flex items-stretch overflow-hidden rounded-md border border-white/15 bg-[#151821]">
+      <button
+        type="button"
+        aria-label="Decrease"
+        onClick={() => bump(-1)}
+        className={`${pad} border-r border-white/10 text-zinc-300 hover:bg-white/10 active:bg-white/15`}
+      >
+        −
+      </button>
+      <input
+        type="number"
+        step={step}
+        value={safe}
+        onChange={(e) => {
+          const next = Number(e.target.value)
+          if (!Number.isFinite(next)) return
+          let clamped = next
+          if (min != null) clamped = Math.max(min, clamped)
+          if (max != null) clamped = Math.min(max, clamped)
+          onChange(clamped)
+        }}
+        className={`${field} bg-transparent text-center font-mono text-zinc-100 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
+      />
+      <button
+        type="button"
+        aria-label="Increase"
+        onClick={() => bump(1)}
+        className={`${pad} border-l border-white/10 text-zinc-300 hover:bg-white/10 active:bg-white/15`}
+      >
+        +
+      </button>
+    </div>
+  )
+}
+
 export function Avatar({ id, name, className = '' }) {
   const tone = {
     ola: 'bg-violet-500/30 text-violet-100',

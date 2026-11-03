@@ -17,7 +17,6 @@ import {
   LIFT_TONE,
   QUICK_MOD,
   RANK_LABEL,
-  RPE_OPTIONS,
   SET_PRESETS,
   WEEK_CELL_PX,
   WEEKDAYS,
@@ -39,7 +38,7 @@ import {
   weeksOutFrom,
 } from '../domain'
 import { MesoSheet } from './MesoSheet'
-import { Card, Label, useCountdown } from './ui'
+import { Card, Label, Stepper, useCountdown } from './ui'
 
 export function CoachProgramme({
   client,
@@ -597,7 +596,7 @@ export function CoachProgramme({
                 <button type="button" onClick={() => setStage('library')} className="text-xs text-cyan-300"><SlidersHorizontal size={12} className="mr-1 inline" />Variation library</button>
               </div>
               {!day.active && <p className="text-sm text-zinc-500">This is a rest day. Turn it on in the micro strip if you want work here.</p>}
-              <div className="grid gap-3">
+              <div className="mx-auto grid max-w-3xl gap-3">
                 {dayItems(day).map((item, index) => (
                   <div
                     key={item.id}
@@ -612,55 +611,70 @@ export function CoachProgramme({
                       <div className="font-display text-xl text-white">
                         {item.kind === 'main' ? `${RANK_LABEL[item.rank]} ${LIFT_LABEL[item.lift]}` : item.name}
                       </div>
-                      <button type="button" onClick={() => removeItem(selectedDay, item.id)} className="ml-auto text-zinc-500 hover:text-red-400"><Trash2 size={14} /></button>
+                      <button type="button" onClick={() => removeItem(selectedDay, item.id)} className="ml-auto rounded-md p-1.5 text-zinc-500 opacity-60 transition hover:bg-red-500/15 hover:text-red-300 hover:opacity-100" aria-label="Remove exercise">
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                     {item.setGroups.map((g) => (
-                      <div key={g.id} className="mb-2 grid grid-cols-2 gap-2 rounded-lg border border-white/8 p-2 sm:grid-cols-6">
-                        <label className="col-span-2 sm:col-span-2">
-                          <Label>Label</Label>
-                          <input list="set-presets" value={g.label} onChange={(e) => updateGroup(item.id, g.id, { label: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm" />
-                        </label>
-                        {item.kind === 'main' && (
-                          <label className="col-span-2 sm:col-span-2">
-                            <Label>Exercise</Label>
-                            <select value={g.exercise} onChange={(e) => applyExerciseToGroup(item, g.id, e.target.value)} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm">
-                              {client.liftLibrary[item.lift].map((v) => <option key={v.id} value={v.name}>{v.name} · {Math.round(v.modifier * 100)}%</option>)}
-                            </select>
+                      <div key={g.id} className="group/set relative mb-2 rounded-lg border border-white/8 p-2.5 hover:border-white/15">
+                        <button
+                          type="button"
+                          title="Delete set"
+                          aria-label="Delete set"
+                          onClick={() => updateItem(selectedDay, item.id, { setGroups: item.setGroups.filter((x) => x.id !== g.id) })}
+                          className="absolute right-2 top-2 rounded-md p-1.5 text-zinc-500 opacity-0 transition group-hover/set:opacity-100 hover:bg-red-500/15 hover:text-red-300 focus:opacity-100"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                        <div className="grid grid-cols-1 gap-2 pr-8 sm:grid-cols-2">
+                          <label className="min-w-0">
+                            <Label>Label</Label>
+                            <input list="set-presets" value={g.label} onChange={(e) => updateGroup(item.id, g.id, { label: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
                           </label>
-                        )}
-                        <label>
-                          <Label>Sets</Label>
-                          <input type="number" min="1" value={g.count} onChange={(e) => updateGroup(item.id, g.id, { count: Number(e.target.value) })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm" />
-                        </label>
-                        <label>
-                          <Label>Reps</Label>
-                          <input type="number" min="1" max="12" value={g.reps} onChange={(e) => updateGroup(item.id, g.id, { reps: Number(e.target.value) })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm" />
-                        </label>
-                        <label>
-                          <Label>RPE</Label>
-                          <select value={g.rpe} onChange={(e) => updateGroup(item.id, g.id, { rpe: Number(e.target.value) })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm">
-                            {RPE_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-                          </select>
-                        </label>
-                        <div className="grid grid-rows-2 gap-1">
-                          <label>
+                          {item.kind === 'main' ? (
+                            <label className="min-w-0">
+                              <Label>Exercise</Label>
+                              <select value={g.exercise} onChange={(e) => applyExerciseToGroup(item, g.id, e.target.value)} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm">
+                                {client.liftLibrary[item.lift].map((v) => <option key={v.id} value={v.name}>{v.name} · {Math.round(v.modifier * 100)}%</option>)}
+                              </select>
+                            </label>
+                          ) : (
+                            <div className="hidden sm:block" />
+                          )}
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-end gap-3">
+                          <div>
+                            <Label>Sets</Label>
+                            <Stepper value={g.count} min={1} max={20} onChange={(count) => updateGroup(item.id, g.id, { count })} />
+                          </div>
+                          <div>
+                            <Label>Reps</Label>
+                            <Stepper value={g.reps} min={1} max={30} onChange={(reps) => updateGroup(item.id, g.id, { reps })} />
+                          </div>
+                          <div>
+                            <Label>RPE</Label>
+                            <Stepper value={g.rpe} step={0.5} min={5} max={10} onChange={(rpe) => updateGroup(item.id, g.id, { rpe })} />
+                          </div>
+                          <label className="w-20">
                             <Label>Floor</Label>
-                            <input type="number" step="2.5" placeholder="—" value={g.floor} onChange={(e) => updateGroup(item.id, g.id, { floor: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm" />
+                            <input type="number" step="2.5" placeholder="—" value={g.floor} onChange={(e) => updateGroup(item.id, g.id, { floor: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
                           </label>
-                          <label>
+                          <label className="w-20">
                             <Label>Cap</Label>
-                            <input type="number" step="2.5" placeholder="—" value={g.cap} onChange={(e) => updateGroup(item.id, g.id, { cap: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1 text-sm" />
+                            <input type="number" step="2.5" placeholder="—" value={g.cap} onChange={(e) => updateGroup(item.id, g.id, { cap: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
                           </label>
                         </div>
                         {item.kind === 'main' && (
-                          <div className="col-span-2 text-[11px] text-zinc-500 sm:col-span-6">
-                            Chart ~ {fmtKg(loadFromChart(client.pbs[item.lift], g.reps, g.rpe, g.modifier))} kg ({(g.modifier * lookupPct(g.reps, g.rpe) * 100).toFixed(1)}% of {fmtKg(client.pbs[item.lift])} PB · {g.exercise} ×{g.modifier.toFixed(2)})
-                            <button type="button" onClick={() => updateItem(selectedDay, item.id, { setGroups: item.setGroups.filter((x) => x.id !== g.id) })} className="ml-2 text-zinc-500 hover:text-red-400"><Trash2 size={12} className="inline" /></button>
+                          <div className="mt-2 text-[11px] text-zinc-500">
+                            Chart ~ {fmtKg(loadFromChart(client.pbs[item.lift], g.reps, g.rpe, g.modifier))} kg
+                            <span className="text-zinc-600">
+                              {' '}({(g.modifier * lookupPct(g.reps, g.rpe) * 100).toFixed(1)}% of {fmtKg(client.pbs[item.lift])} PB · {g.exercise} ×{g.modifier.toFixed(2)})
+                            </span>
                           </div>
                         )}
                       </div>
                     ))}
-                    <button type="button" onClick={() => addSetGroup(item.id)} className="inline-flex items-center gap-1 rounded-md border border-dashed border-white/15 px-3 py-1.5 text-xs text-zinc-400">
+                    <button type="button" onClick={() => addSetGroup(item.id)} className="inline-flex items-center gap-1 rounded-md border border-dashed border-white/15 px-3 py-1.5 text-xs text-zinc-400 hover:border-white/30 hover:text-zinc-200">
                       <Plus size={12} /> Add set
                     </button>
                   </div>
