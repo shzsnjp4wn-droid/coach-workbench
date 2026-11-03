@@ -78,9 +78,29 @@ export function MessagesPage({ role, athlete, athletes, coach = COACH, messages,
               <div className="mx-auto rounded-full bg-white/6 px-2 py-0.5 text-[10px] uppercase tracking-widest text-zinc-500">{formatMessageDay(group.items[0].at)}</div>
               {group.items.map((msg) => {
                 const mine = msg.from === role
+                const quote = msg.quote
                 return (
                   <div key={msg.id} className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[78%] rounded-2xl px-3 py-2 text-sm ${mine ? (role === 'coach' ? 'bg-cyan-400/15 text-cyan-50' : 'bg-lime-400/15 text-lime-50') : 'bg-white/6 text-zinc-100'}`}>
+                      {quote && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (quote.kind === 'video' && quote.videoUrl) window.open(quote.videoUrl, '_blank', 'noopener,noreferrer')
+                          }}
+                          className="mb-2 w-full rounded-xl border border-white/10 bg-black/35 px-2.5 py-2 text-left opacity-80 hover:opacity-100"
+                        >
+                          <div className="text-[9px] uppercase tracking-widest text-zinc-500">
+                            {quote.kind === 'video' ? 'Replying to clip' : 'Replying to note'}
+                          </div>
+                          {quote.kind === 'video' && quote.videoUrl ? (
+                            <video src={quote.videoUrl} muted playsInline className="mt-1 max-h-20 rounded-md opacity-70" />
+                          ) : null}
+                          <div className="mt-1 line-clamp-3 text-xs text-zinc-400">
+                            {quote.caption || quote.text || 'Original'}
+                          </div>
+                        </button>
+                      )}
                       {msg.text && <p className="whitespace-pre-wrap">{msg.text}</p>}
                       {msg.attachment?.kind === 'image' && <img src={msg.attachment.url} alt={msg.attachment.name} className="mt-2 max-h-56 rounded-lg" />}
                       {msg.attachment?.kind === 'video' && <video src={msg.attachment.url} controls className="mt-2 max-h-56 rounded-lg" />}

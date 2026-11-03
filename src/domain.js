@@ -405,6 +405,23 @@ export function loadFromChart(pb, reps, rpe, modifier = 1) {
   const mod = modifier > 0 ? modifier : 1
   return roundPlate(pb * mod * lookupPct(reps, rpe))
 }
+
+/**
+ * Sheets-style range: prescribed RPE ± 1 (clamped), for a useful load band.
+ * Goal is the exact chart load at the prescribed RPE.
+ */
+export function loadRangeFromChart(pb, reps, rpe, modifier = 1) {
+  const goal = loadFromChart(pb, reps, rpe, modifier)
+  const lowRpe = Math.max(5, Number(rpe) - 1)
+  const highRpe = Math.min(10, Number(rpe) + 1)
+  const a = loadFromChart(pb, reps, lowRpe, modifier)
+  const b = loadFromChart(pb, reps, highRpe, modifier)
+  return {
+    low: Math.min(a, b),
+    high: Math.max(a, b),
+    goal,
+  }
+}
 export function isPlaced(week, lift, rank) {
   return week.days.some((d) => dayItems(d).some((i) => i.kind === 'main' && i.lift === lift && i.rank === rank))
 }

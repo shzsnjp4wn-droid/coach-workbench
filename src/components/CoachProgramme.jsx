@@ -27,7 +27,7 @@ import {
   fmtKg,
   highCns,
   isPlaced,
-  loadFromChart,
+  loadRangeFromChart,
   lookupPct,
   makeAccItem,
   makeMainItem,
@@ -70,6 +70,18 @@ export function CoachProgramme({
 
   function mapWeeks(p, fn) {
     return p.weeks.map((w, wi) => (p.sameEveryWeek || wi === selectedWeek ? fn(w, wi) : w))
+  }
+
+  /** Week 1 is the template; editing any later week unlocks independent micros. */
+  function unlockIndependentWeek(weekIndex) {
+    if (weekIndex <= 0) return
+    if (!plan?.sameEveryWeek) return
+    patchPlan((p) => ({ ...p, sameEveryWeek: false }))
+  }
+
+  function selectMicroWeek(weekIndex) {
+    setSelectedWeek(weekIndex)
+    unlockIndependentWeek(weekIndex)
   }
 
   function splitAfter(weekNumber) {
@@ -172,6 +184,7 @@ export function CoachProgramme({
   }
 
   function dropChip(lift, rank, weekIndex, dayIndex) {
+    unlockIndependentWeek(weekIndex)
     if (!lift) return
     patchPlan((p, c) => {
       const item = makeMainItem(lift, rank, c.liftLibrary)
@@ -279,19 +292,31 @@ export function CoachProgramme({
   }
 
   function updateGroupAt(weekIndex, dayIndex, itemId, groupId, partial) {
-    patchPlan((p) => ({
-      ...p,
-      sameEveryWeek: false,
-      weeks: p.weeks.map((w, wi) => wi !== weekIndex ? w : {
-        days: w.days.map((d, di) => di !== dayIndex ? d : {
-          ...d,
-          items: dayItems(d).map((i) => i.id === itemId ? {
-            ...i,
-            setGroups: i.setGroups.map((g) => (g.id === groupId ? { ...g, ...partial } : g)),
-          } : i),
+    setSelectedWeek(weekIndex)
+    patchPlan((p) => {
+      const independent = weekIndex > 0 || !p.sameEveryWeek
+      const nextSame = weekIndex > 0 ? false : p.sameEveryWeek
+      return {
+        ...p,
+        sameEveryWeek: nextSame,
+        weeks: p.weeks.map((w, wi) => {
+          if (independent && wi !== weekIndex) return w
+          if (!independent && nextSame) {
+            // still same-every-week: apply to all weeks
+          } else if (wi !== weekIndex) return w
+          return {
+            ...w,
+            days: w.days.map((d, di) => (di !== dayIndex ? d : {
+              ...d,
+              items: dayItems(d).map((i) => (i.id !== itemId ? i : {
+                ...i,
+                setGroups: i.setGroups.map((g) => (g.id === groupId ? { ...g, ...partial } : g)),
+              })),
+            })),
+          }
         }),
-      }),
-    }))
+      }
+    })
   }
 
   function addAccessory(name) {
@@ -480,215 +505,236 @@ export function CoachProgramme({
           </div>
 
           {(stage === 'micro' || stage === 'day') && (
-            <Card className="p-4">
-              <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2 text-sm text-zinc-300"><LayoutGrid size={16} className="text-cyan-300" /> Micro · {selectedBlock.name}</div>
-                  <p className="mt-1 text-xs text-zinc-500">Frequency creates 1°/2°/3° chips. Grey days are rest. Scroll to see the same weekday in neighbouring weeks.</p>
-                </div>
-                <label className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs">
-                  <input type="checkbox" checked={plan.sameEveryWeek} onChange={(e) => setSameEveryWeek(e.target.checked)} />
-                  Same microcycle every week
-                </label>
-              </div>
-              <div className="mb-3 flex flex-wrap items-end gap-4">
-                {['squat', 'bench', 'deadlift'].map((lift) => (
-                  <div key={lift}>
-                    <Label>{LIFT_LABEL[lift]} frequency</Label>
-                    <div className="flex items-center gap-2">
-                      <button type="button" onClick={() => setFrequency(lift, plan.frequency[lift] - 1)} className="h-7 w-7 rounded border border-white/10">−</button>
-                      <span className="w-6 text-center font-display text-xl">{plan.frequency[lift]}</span>
-                      <button type="button" onClick={() => setFrequency(lift, plan.frequency[lift] + 1)} className="h-7 w-7 rounded border border-white/10">+</button>
-                    </div>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {Array.from({ length: plan.frequency[lift] }, (_, i) => i + 1).map((rank) => {
-                        const placed = isPlaced(focusWeek, lift, rank)
-                        return (
-                          <button
-                            key={`${lift}-${rank}`}
-                            type="button"
-                            title={placed ? 'Click to return to bank' : 'Drag onto a day, or click then click a day'}
-                            draggable
-                            onDragStart={(e) => e.dataTransfer.setData('text/plain', `${lift}:${rank}`)}
-                            onClick={() => {
-                              if (placed) unplaceChip(lift, rank)
-                              else setPaletteChip({ lift, rank })
-                            }}
-                            className={`rounded-md border px-2 py-1 text-xs ${LIFT_TONE[lift]} ${placed ? 'opacity-45 ring-1 ring-white/20' : ''} ${paletteChip?.lift === lift && paletteChip?.rank === rank ? 'ring-2 ring-white' : ''}`}
-                          >
-                            {RANK_LABEL[rank]} {LIFT_LABEL[lift]}{placed ? ' · undo' : ''}
-                          </button>
-                        )
-                      })}
-                    </div>
+            <>
+              <Card className="p-4">
+                <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm text-zinc-300"><LayoutGrid size={16} className="text-cyan-300" /> Micro · {selectedBlock.name}</div>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      Week 1 is the main template. Scroll sideways to compare later weeks — they stay grey until you edit them (that turns off “same every week”).
+                    </p>
                   </div>
-                ))}
-              </div>
-              <div className="overflow-x-auto">
-                <div className="flex min-w-max gap-3 pb-2">
-                  {plan.weeks.map((wk, wi) => (
-                    <div key={wi} className={`rounded-xl border p-2 transition ${wi === selectedWeek ? 'border-cyan-400/60 bg-cyan-400/5' : 'border-white/8 opacity-45 hover:border-white/25 hover:opacity-80'}`}>
-                      <button type="button" onClick={() => setSelectedWeek(wi)} className="mb-2 font-display text-sm text-white">Week {wi + 1}</button>
-                      <div className="flex gap-1">
-                        {wk.days.map((d, di) => (
-                          <div
-                            key={d.id}
-                            onDragOver={(e) => e.preventDefault()}
-                            onDrop={(e) => {
-                              e.preventDefault()
-                              const [lift, rank] = e.dataTransfer.getData('text/plain').split(':')
-                              dropChip(lift, Number(rank), wi, di)
-                            }}
-                            onClick={() => {
-                              if (paletteChip) dropChip(paletteChip.lift, paletteChip.rank, wi, di)
-                              else if (!d.active) toggleDay(wi, di)
-                              else { setSelectedWeek(wi); setSelectedDay(di); setStage('day') }
-                            }}
-                            className={`w-[108px] rounded-lg border p-1.5 transition ${d.active ? 'border-white/15 bg-[#10131a]' : 'border-dashed border-white/10 bg-transparent text-zinc-600'} ${highCns(d) ? 'border-orange-500/60' : ''} ${wi === selectedWeek && di === selectedDay ? 'ring-2 ring-cyan-400/70' : 'hover:border-cyan-400/40'}`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <span className="text-[10px] uppercase tracking-wider">{WEEKDAYS[di].slice(0, 3)}</span>
-                              <button type="button" onClick={(e) => { e.stopPropagation(); toggleDay(wi, di) }} className="text-[9px] uppercase text-zinc-500">{d.active ? 'on' : 'rest'}</button>
-                            </div>
-                            {d.active ? (
-                              <div className="mt-1 grid gap-1">
-                                {dayItems(d).filter((i) => i.kind === 'main').map((m) => (
-                                  <button
-                                    key={m.id}
-                                    type="button"
-                                    title="Drag to another day, or click to return to bank"
-                                    draggable
-                                    onDragStart={(e) => {
-                                      e.stopPropagation()
-                                      e.dataTransfer.setData('text/plain', `${m.lift}:${m.rank}`)
-                                    }}
-                                    onClick={(e) => {
-                                      e.stopPropagation()
-                                      setSelectedWeek(wi)
-                                      unplaceChip(m.lift, m.rank, wi)
-                                    }}
-                                    className={`cursor-grab rounded px-1 py-0.5 text-left text-[10px] active:cursor-grabbing ${LIFT_TONE[m.lift]}`}
-                                  >
-                                    {RANK_LABEL[m.rank]} {LIFT_LABEL[m.lift]}
-                                  </button>
-                                ))}
-                                {dayItems(d).filter((i) => i.kind === 'main').length === 0 && <div className="py-4 text-center text-[10px] text-zinc-600">Drop</div>}
-                              </div>
-                            ) : (
-                              <div className="py-5 text-center text-[10px]">Rest</div>
-                            )}
-                          </div>
-                        ))}
+                  <label className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs">
+                    <input type="checkbox" checked={plan.sameEveryWeek} onChange={(e) => setSameEveryWeek(e.target.checked)} />
+                    Same microcycle every week
+                  </label>
+                </div>
+                <div className="mb-3 flex flex-wrap items-end gap-4">
+                  {['squat', 'bench', 'deadlift'].map((lift) => (
+                    <div key={lift}>
+                      <Label>{LIFT_LABEL[lift]} frequency</Label>
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={() => setFrequency(lift, plan.frequency[lift] - 1)} className="h-7 w-7 rounded border border-white/10">−</button>
+                        <span className="w-6 text-center font-display text-xl">{plan.frequency[lift]}</span>
+                        <button type="button" onClick={() => setFrequency(lift, plan.frequency[lift] + 1)} className="h-7 w-7 rounded border border-white/10">+</button>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {Array.from({ length: plan.frequency[lift] }, (_, i) => i + 1).map((rank) => {
+                          const placed = isPlaced(focusWeek, lift, rank)
+                          return (
+                            <button
+                              key={`${lift}-${rank}`}
+                              type="button"
+                              title={placed ? 'Click to return to bank' : 'Drag onto a day, or click then click a day'}
+                              draggable
+                              onDragStart={(e) => e.dataTransfer.setData('text/plain', `${lift}:${rank}`)}
+                              onClick={() => {
+                                if (placed) unplaceChip(lift, rank)
+                                else setPaletteChip({ lift, rank })
+                              }}
+                              className={`rounded-md border px-2 py-1 text-xs ${LIFT_TONE[lift]} ${placed ? 'opacity-45 ring-1 ring-white/20' : ''} ${paletteChip?.lift === lift && paletteChip?.rank === rank ? 'ring-2 ring-white' : ''}`}
+                            >
+                              {RANK_LABEL[rank]} {LIFT_LABEL[lift]}{placed ? ' · undo' : ''}
+                            </button>
+                          )
+                        })}
                       </div>
                     </div>
                   ))}
                 </div>
-              </div>
-            </Card>
-          )}
-
-          {stage === 'day' && day && (
-            <Card className="p-4">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-sm text-zinc-300">
-                  <Target size={16} className="text-cyan-300" /> {WEEKDAYS[selectedDay]} · {dayTitle(day)}
-                </div>
-                <button type="button" onClick={() => setStage('library')} className="text-xs text-cyan-300"><SlidersHorizontal size={12} className="mr-1 inline" />Variation library</button>
-              </div>
-              {!day.active && <p className="text-sm text-zinc-500">This is a rest day. Turn it on in the micro strip if you want work here.</p>}
-              <div className="mx-auto grid max-w-3xl gap-3">
-                {dayItems(day).map((item, index) => (
-                  <div
-                    key={item.id}
-                    draggable
-                    onDragStart={(e) => e.dataTransfer.setData('text/plain', String(index))}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => { e.preventDefault(); reorderItem(selectedDay, Number(e.dataTransfer.getData('text/plain')), index) }}
-                    className="rounded-xl border border-white/8 bg-black/25 p-3"
-                  >
-                    <div className="mb-2 flex items-center gap-2">
-                      <GripVertical size={14} className="text-zinc-500" />
-                      <div className="font-display text-xl text-white">
-                        {item.kind === 'main' ? `${RANK_LABEL[item.rank]} ${LIFT_LABEL[item.lift]}` : item.name}
-                      </div>
-                      <button type="button" onClick={() => removeItem(selectedDay, item.id)} className="ml-auto rounded-md p-1.5 text-zinc-500 opacity-60 transition hover:bg-red-500/15 hover:text-red-300 hover:opacity-100" aria-label="Remove exercise">
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                    {item.setGroups.map((g) => (
-                      <div key={g.id} className="group/set relative mb-2 rounded-lg border border-white/8 p-2.5 hover:border-white/15">
-                        <button
-                          type="button"
-                          title="Delete set"
-                          aria-label="Delete set"
-                          onClick={() => updateItem(selectedDay, item.id, { setGroups: item.setGroups.filter((x) => x.id !== g.id) })}
-                          className="absolute right-2 top-2 rounded-md p-1.5 text-zinc-500 opacity-0 transition group-hover/set:opacity-100 hover:bg-red-500/15 hover:text-red-300 focus:opacity-100"
+                <div className="overflow-x-auto">
+                  <div className="flex min-w-max gap-3 pb-2">
+                    {plan.weeks.map((wk, wi) => {
+                      const activeWeek = wi === selectedWeek
+                      const dimmed = wi > 0 && !activeWeek
+                      return (
+                        <div
+                          key={wi}
+                          className={`rounded-xl border p-2 transition ${activeWeek ? 'border-cyan-400/60 bg-cyan-400/5' : dimmed ? 'border-white/8 opacity-35' : 'border-white/8 opacity-70'} ${wi === 0 ? 'ring-1 ring-lime-400/20' : ''}`}
                         >
-                          <Trash2 size={14} />
+                          <button type="button" onClick={() => selectMicroWeek(wi)} className="mb-2 font-display text-sm text-white">
+                            Week {wi + 1}{wi === 0 ? ' · main' : ''}
+                          </button>
+                          <div className="flex gap-1">
+                            {wk.days.map((d, di) => (
+                              <div
+                                key={d.id}
+                                onDragOver={(e) => e.preventDefault()}
+                                onDrop={(e) => {
+                                  e.preventDefault()
+                                  selectMicroWeek(wi)
+                                  const [lift, rank] = e.dataTransfer.getData('text/plain').split(':')
+                                  dropChip(lift, Number(rank), wi, di)
+                                }}
+                                onClick={() => {
+                                  selectMicroWeek(wi)
+                                  if (paletteChip) dropChip(paletteChip.lift, paletteChip.rank, wi, di)
+                                  else if (!d.active) toggleDay(wi, di)
+                                  else { setSelectedDay(di); setStage('day') }
+                                }}
+                                className={`w-[108px] rounded-lg border p-1.5 transition ${d.active ? 'border-white/15 bg-[#10131a]' : 'border-dashed border-white/10 bg-transparent text-zinc-600'} ${highCns(d) ? 'border-orange-500/60' : ''} ${activeWeek && di === selectedDay ? 'ring-2 ring-cyan-400/70' : 'hover:border-cyan-400/40'}`}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] uppercase tracking-wider">{WEEKDAYS[di].slice(0, 3)}</span>
+                                  <button type="button" onClick={(e) => { e.stopPropagation(); selectMicroWeek(wi); toggleDay(wi, di) }} className="text-[9px] uppercase text-zinc-500">{d.active ? 'on' : 'rest'}</button>
+                                </div>
+                                {d.active ? (
+                                  <div className="mt-1 grid gap-1">
+                                    {dayItems(d).filter((i) => i.kind === 'main').map((m) => (
+                                      <button
+                                        key={m.id}
+                                        type="button"
+                                        title="Drag to another day, or click to return to bank"
+                                        draggable
+                                        onDragStart={(e) => {
+                                          e.stopPropagation()
+                                          e.dataTransfer.setData('text/plain', `${m.lift}:${m.rank}`)
+                                        }}
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          selectMicroWeek(wi)
+                                          unplaceChip(m.lift, m.rank, wi)
+                                        }}
+                                        className={`cursor-grab rounded px-1 py-0.5 text-left text-[10px] active:cursor-grabbing ${LIFT_TONE[m.lift]}`}
+                                      >
+                                        {RANK_LABEL[m.rank]} {LIFT_LABEL[m.lift]}
+                                      </button>
+                                    ))}
+                                    {dayItems(d).filter((i) => i.kind === 'main').length === 0 && <div className="py-4 text-center text-[10px] text-zinc-600">Drop</div>}
+                                  </div>
+                                ) : (
+                                  <div className="py-5 text-center text-[10px]">Rest</div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </Card>
+
+              {day && (
+                <Card className="p-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-sm text-zinc-300">
+                      <Target size={16} className="text-cyan-300" />
+                      Week {selectedWeek + 1} · {WEEKDAYS[selectedDay]} · {dayTitle(day)}
+                    </div>
+                    <button type="button" onClick={() => setStage('library')} className="text-xs text-cyan-300"><SlidersHorizontal size={12} className="mr-1 inline" />Variation library</button>
+                  </div>
+                  {!day.active && <p className="text-sm text-zinc-500">This is a rest day. Turn it on in the micro strip if you want work here.</p>}
+                  <div className="grid max-w-3xl gap-3">
+                    {dayItems(day).map((item, index) => (
+                      <div
+                        key={item.id}
+                        draggable
+                        onDragStart={(e) => e.dataTransfer.setData('text/plain', String(index))}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => { e.preventDefault(); reorderItem(selectedDay, Number(e.dataTransfer.getData('text/plain')), index) }}
+                        className="rounded-xl border border-white/8 bg-black/25 p-3"
+                      >
+                        <div className="mb-2 flex items-center gap-2">
+                          <GripVertical size={14} className="text-zinc-500" />
+                          <div className="font-display text-xl text-white">
+                            {item.kind === 'main' ? `${RANK_LABEL[item.rank]} ${LIFT_LABEL[item.lift]}` : item.name}
+                          </div>
+                          <button type="button" onClick={() => removeItem(selectedDay, item.id)} className="ml-auto rounded-md p-1.5 text-zinc-500 opacity-60 transition hover:bg-red-500/15 hover:text-red-300 hover:opacity-100" aria-label="Remove exercise">
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                        {item.setGroups.map((g) => {
+                          const range = item.kind === 'main'
+                            ? loadRangeFromChart(client.pbs[item.lift], g.reps, g.rpe, g.modifier)
+                            : null
+                          return (
+                            <div key={g.id} className="group/set relative mb-2 rounded-lg border border-white/8 p-2.5 hover:border-white/15">
+                              <button
+                                type="button"
+                                title="Delete set"
+                                aria-label="Delete set"
+                                onClick={() => updateItem(selectedDay, item.id, { setGroups: item.setGroups.filter((x) => x.id !== g.id) })}
+                                className="absolute right-2 top-2 rounded-md p-1.5 text-zinc-500 opacity-0 transition group-hover/set:opacity-100 hover:bg-red-500/15 hover:text-red-300 focus:opacity-100"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                              <div className="grid grid-cols-1 gap-2 pr-8 sm:grid-cols-2">
+                                <label className="min-w-0">
+                                  <Label>Label</Label>
+                                  <input list="set-presets" value={g.label} onChange={(e) => updateGroup(item.id, g.id, { label: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
+                                </label>
+                                {item.kind === 'main' ? (
+                                  <label className="min-w-0">
+                                    <Label>Exercise</Label>
+                                    <select value={g.exercise} onChange={(e) => applyExerciseToGroup(item, g.id, e.target.value)} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm">
+                                      {client.liftLibrary[item.lift].map((v) => <option key={v.id} value={v.name}>{v.name} · {Math.round(v.modifier * 100)}%</option>)}
+                                    </select>
+                                  </label>
+                                ) : (
+                                  <div className="hidden sm:block" />
+                                )}
+                              </div>
+                              <div className="mt-2 flex flex-wrap items-end gap-3">
+                                <div className="w-[7.5rem]">
+                                  <Label>Sets</Label>
+                                  <Stepper value={g.count} min={1} max={20} onChange={(count) => updateGroup(item.id, g.id, { count })} />
+                                </div>
+                                <div className="w-[7.5rem]">
+                                  <Label>Reps</Label>
+                                  <Stepper value={g.reps} min={1} max={30} onChange={(reps) => updateGroup(item.id, g.id, { reps })} />
+                                </div>
+                                <div className="w-[7.5rem]">
+                                  <Label>RPE</Label>
+                                  <Stepper value={g.rpe} step={0.5} min={5} max={10} onChange={(rpe) => updateGroup(item.id, g.id, { rpe })} />
+                                </div>
+                                <label className="w-20">
+                                  <Label>Floor</Label>
+                                  <input type="number" step="2.5" placeholder="—" value={g.floor} onChange={(e) => updateGroup(item.id, g.id, { floor: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
+                                </label>
+                                <label className="w-20">
+                                  <Label>Cap</Label>
+                                  <input type="number" step="2.5" placeholder="—" value={g.cap} onChange={(e) => updateGroup(item.id, g.id, { cap: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
+                                </label>
+                              </div>
+                              {item.kind === 'main' && range && (
+                                <div className="mt-2 text-[11px] text-zinc-500">
+                                  Range {fmtKg(range.low)}–{fmtKg(range.high)} · Goal {fmtKg(range.goal)} kg
+                                  <span className="text-zinc-600">
+                                    {' '}(RPE {g.rpe}±1 · {(g.modifier * lookupPct(g.reps, g.rpe) * 100).toFixed(1)}% of {fmtKg(client.pbs[item.lift])} PB)
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                        <button type="button" onClick={() => addSetGroup(item.id)} className="inline-flex items-center gap-1 rounded-md border border-dashed border-white/15 px-3 py-1.5 text-xs text-zinc-400 hover:border-white/30 hover:text-zinc-200">
+                          <Plus size={12} /> Add set
                         </button>
-                        <div className="grid grid-cols-1 gap-2 pr-8 sm:grid-cols-2">
-                          <label className="min-w-0">
-                            <Label>Label</Label>
-                            <input list="set-presets" value={g.label} onChange={(e) => updateGroup(item.id, g.id, { label: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
-                          </label>
-                          {item.kind === 'main' ? (
-                            <label className="min-w-0">
-                              <Label>Exercise</Label>
-                              <select value={g.exercise} onChange={(e) => applyExerciseToGroup(item, g.id, e.target.value)} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm">
-                                {client.liftLibrary[item.lift].map((v) => <option key={v.id} value={v.name}>{v.name} · {Math.round(v.modifier * 100)}%</option>)}
-                              </select>
-                            </label>
-                          ) : (
-                            <div className="hidden sm:block" />
-                          )}
-                        </div>
-                        <div className="mt-2 flex flex-wrap items-end gap-3">
-                          <div>
-                            <Label>Sets</Label>
-                            <Stepper value={g.count} min={1} max={20} onChange={(count) => updateGroup(item.id, g.id, { count })} />
-                          </div>
-                          <div>
-                            <Label>Reps</Label>
-                            <Stepper value={g.reps} min={1} max={30} onChange={(reps) => updateGroup(item.id, g.id, { reps })} />
-                          </div>
-                          <div>
-                            <Label>RPE</Label>
-                            <Stepper value={g.rpe} step={0.5} min={5} max={10} onChange={(rpe) => updateGroup(item.id, g.id, { rpe })} />
-                          </div>
-                          <label className="w-20">
-                            <Label>Floor</Label>
-                            <input type="number" step="2.5" placeholder="—" value={g.floor} onChange={(e) => updateGroup(item.id, g.id, { floor: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
-                          </label>
-                          <label className="w-20">
-                            <Label>Cap</Label>
-                            <input type="number" step="2.5" placeholder="—" value={g.cap} onChange={(e) => updateGroup(item.id, g.id, { cap: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
-                          </label>
-                        </div>
-                        {item.kind === 'main' && (
-                          <div className="mt-2 text-[11px] text-zinc-500">
-                            Chart ~ {fmtKg(loadFromChart(client.pbs[item.lift], g.reps, g.rpe, g.modifier))} kg
-                            <span className="text-zinc-600">
-                              {' '}({(g.modifier * lookupPct(g.reps, g.rpe) * 100).toFixed(1)}% of {fmtKg(client.pbs[item.lift])} PB · {g.exercise} ×{g.modifier.toFixed(2)})
-                            </span>
-                          </div>
-                        )}
                       </div>
                     ))}
-                    <button type="button" onClick={() => addSetGroup(item.id)} className="inline-flex items-center gap-1 rounded-md border border-dashed border-white/15 px-3 py-1.5 text-xs text-zinc-400 hover:border-white/30 hover:text-zinc-200">
-                      <Plus size={12} /> Add set
-                    </button>
                   </div>
-                ))}
-              </div>
-              <datalist id="set-presets">{SET_PRESETS.map((n) => <option key={n} value={n} />)}</datalist>
-              <div className="mt-4">
-                <Label>Add accessory block</Label>
-                <select defaultValue="" onChange={(e) => { addAccessory(e.target.value); e.target.value = '' }} className="rounded-md border border-white/10 bg-[#151821] px-2 py-2 text-sm">
-                  <option value="" disabled>From library</option>
-                  {client.accessoryLibrary.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
-                </select>
-              </div>
-            </Card>
+                  <datalist id="set-presets">{SET_PRESETS.map((n) => <option key={n} value={n} />)}</datalist>
+                  <div className="mt-4">
+                    <Label>Add accessory block</Label>
+                    <select defaultValue="" onChange={(e) => { addAccessory(e.target.value); e.target.value = '' }} className="rounded-md border border-white/10 bg-[#151821] px-2 py-2 text-sm">
+                      <option value="" disabled>From library</option>
+                      {client.accessoryLibrary.map((a) => <option key={a.id} value={a.name}>{a.name}</option>)}
+                    </select>
+                  </div>
+                </Card>
+              )}
+            </>
           )}
 
           {stage === 'library' && (

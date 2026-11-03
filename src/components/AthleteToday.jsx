@@ -40,6 +40,8 @@ export function AthleteToday({
   onSelectDay,
   onCommit,
   onRemoveVideo,
+  onReplyInChat,
+  viewerRole = 'athlete',
 }) {
   const [drafts, setDrafts] = useState({})
   const [mismatch, setMismatch] = useState(null)
@@ -77,6 +79,7 @@ export function AthleteToday({
         weight: existing ? String(existing.weight) : '',
         reps: existing ? String(existing.reps) : '',
         rpe: existing ? String(existing.rpe) : '',
+        note: existing?.note || '',
         media: null,
       }
     }
@@ -110,6 +113,7 @@ export function AthleteToday({
         shifted,
         date,
         media: draft.media,
+        note: draft.note || '',
       })
       setDrafts((d) => ({ ...d, [row.setKey]: { ...d[row.setKey], media: null } }))
       setMismatch(null)
@@ -221,6 +225,7 @@ export function AthleteToday({
               weight: existing ? String(existing.weight) : '',
               reps: existing ? String(existing.reps) : '',
               rpe: existing ? String(existing.rpe) : '',
+              note: existing?.note || '',
               media: null,
             }
             const video = existing?.videoId ? client.videos.find((v) => v.id === existing.videoId) : null
@@ -361,6 +366,31 @@ export function AthleteToday({
                   >
                     {busyKey === row.setKey ? 'Saving…' : existing ? 'Update set' : 'Log set'}
                   </button>
+                </div>
+                <div className="mt-3">
+                  <div className="mb-1 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Note</div>
+                  <textarea
+                    rows={2}
+                    value={draft.note || ''}
+                    placeholder="How it felt, bar speed, setup…"
+                    onChange={(e) => setDrafts((d) => ({ ...d, [row.setKey]: { ...(d[row.setKey] || draft), note: e.target.value } }))}
+                    className="w-full rounded-lg border border-white/10 bg-[#151821] px-3 py-2 text-sm outline-none"
+                  />
+                  {viewerRole === 'coach' && existing?.note && onReplyInChat && (
+                    <button
+                      type="button"
+                      className="mt-1.5 text-[11px] text-cyan-300"
+                      onClick={() => onReplyInChat({
+                        kind: 'note',
+                        text: existing.note,
+                        caption: `${existing.exercise} · ${setCaption(existing)}`,
+                        date: existing.date,
+                        logId: existing.id,
+                      })}
+                    >
+                      Reply in chat
+                    </button>
+                  )}
                 </div>
                 <div className="mt-3 rounded-lg border border-white/8 bg-black/30 px-3 py-2">
                   <div className="text-[10px] uppercase tracking-[0.16em] text-zinc-500">Video caption</div>
