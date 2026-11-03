@@ -23,6 +23,7 @@ import {
   messagesForPair,
   normalizeBlocks,
   pushE1rm,
+  rebuildExerciseBestsFromLogs,
   runwayWeeks,
   scopeAthleteForCoach,
   sessionAt,
@@ -605,7 +606,8 @@ export default function App() {
 
   async function logSet({ block, weekIndex, dayIndex, row, weight, reps, rpe, shifted, date, media }) {
     const caption = setCaption({ setNumber: row.setNumber, reps, weight, rpe })
-    const e1 = row.lift ? e1FromSet(weight, reps, rpe) : null
+    // Every logged set (comp lift or accessory) gets an e1RM from weight × reps × RPE.
+    const e1 = e1FromSet(weight, reps, rpe)
     const id = athleteIdRef.current
     const current = athletesRef.current[id]
     if (!current) return
@@ -698,6 +700,13 @@ export default function App() {
       }
       if (videoId) videos = videos.map((v) => (v.id === videoId ? { ...v, logId: log.id, coachId: cid } : v))
 
+      const nextLogs = [log, ...current.logs.filter((l) => l.id !== log.id)]
+      const exerciseBests = rebuildExerciseBestsFromLogs(nextLogs)
+      const isPersonalBest = Boolean(
+        e1 != null
+        && Object.values(exerciseBests).some((best) => best?.logId === log.id),
+      )
+
       let e1rmSeries = current.e1rmSeries
       let e1rm = current.e1rm
       let seriesPoint = null
@@ -729,10 +738,11 @@ export default function App() {
 
       const nextAthlete = {
         ...current,
-        logs: [log, ...current.logs.filter((l) => l.id !== log.id)],
+        logs: nextLogs,
         videos,
         e1rm,
         e1rmSeries,
+        exerciseBests,
         scheduleOverrides,
       }
       const nextAthletes = { ...athletesRef.current, [id]: nextAthlete }
@@ -762,13 +772,15 @@ export default function App() {
       if (media?.url?.startsWith('blob:')) {
         try { URL.revokeObjectURL(media.url) } catch { /* ignore */ }
       }
+      // Always persist profile so exerciseBests (pbs.tracked) survive refresh.
+      await persistAthleteStructure({ ...nextAthlete, e1rm, exerciseBests }, cid)
       if (seriesPoint) {
         await upsertE1rmPoint(current.id, { ...seriesPoint, coachId: cid }, cid)
-        await persistAthleteStructure({ ...nextAthlete, e1rm }, cid)
       }
       if (newOverride) await upsertScheduleOverride(current.id, newOverride, cid)
       const estimate = e1 ? ` · e1RM ${fmtKg(e1)}` : ''
-      setToast(media ? `Clip saved · ${caption}${estimate}` : `Logged · ${caption}${estimate}`)
+      const pbTag = isPersonalBest ? ' · Personal best' : ''
+      setToast(media ? `Clip saved · ${caption}${estimate}${pbTag}` : `Logged · ${caption}${estimate}${pbTag}`)
       setSaveState('saved')
     } catch (err) {
       console.error('[supabase] logSet failed', err)
