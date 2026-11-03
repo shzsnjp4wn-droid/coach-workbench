@@ -661,8 +661,15 @@ export function expandDaySets(day, client) {
       for (let i = 0; i < count; i += 1) {
         // One athlete log row per prescribed set — weight/reps logged independently.
         const chartR = chartReps(group)
+        const loadBand = item.kind === 'main'
+          ? loadRangeFromChart(client.pbs[item.lift], chartR, group.rpe, group.modifier, {
+            floor: group.floor,
+            cap: group.cap,
+          })
+          : null
+        const coachGoal = group.goalKg !== '' && group.goalKg != null ? Number(group.goalKg) : null
         const prescribedKg = item.kind === 'main'
-          ? loadFromChart(client.pbs[item.lift], chartR, group.rpe, group.modifier)
+          ? (Number.isFinite(coachGoal) ? coachGoal : loadBand.goal)
           : (group.cap !== '' && group.cap != null ? Number(group.cap) : null)
         const label = (group.label || '').trim()
         const n = setNumber++
@@ -683,6 +690,8 @@ export function expandDaySets(day, client) {
           prescribedRepsLabel: formatReps(group),
           prescribedRpe: group.rpe,
           prescribedKg,
+          loadLow: loadBand?.low ?? null,
+          loadHigh: loadBand?.high ?? null,
           floor: group.floor,
           cap: group.cap,
           count,

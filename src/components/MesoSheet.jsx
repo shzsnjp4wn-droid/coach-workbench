@@ -1,6 +1,7 @@
 import {
   chartReps,
   fmtKg,
+  formatPrescription,
   formatReps,
   hasRepRange,
   loadRangeFromChart,
@@ -102,8 +103,11 @@ export function MesoSheet({
                                 <div className="truncate text-[12px] font-medium text-zinc-100">
                                   {item.kind === 'main' ? `${RANK_LABEL[item.rank]} ${g.exercise}` : item.name}
                                 </div>
-                                <div className="truncate text-[10px] text-zinc-500">
-                                  {g.label || '—'} · {g.count}×{formatReps(g)}
+                                {(g.label || '').trim() ? (
+                                  <div className="truncate text-[10px] text-zinc-500">{g.label}</div>
+                                ) : null}
+                                <div className="mt-0.5 truncate font-mono text-[11px] text-zinc-200">
+                                  {formatPrescription(g)}
                                 </div>
                               </div>
                               <div className="font-mono text-[11px] text-zinc-300">
@@ -126,13 +130,7 @@ export function MesoSheet({
                                 )}
                               </div>
                             </div>
-                            {readOnly ? (
-                              <div className="mt-2 flex gap-3 font-mono text-xs text-zinc-300">
-                                <span>{g.count}×</span>
-                                <span>{formatReps(g)}r</span>
-                                <span>@{g.rpe}</span>
-                              </div>
-                            ) : (
+                            {readOnly ? null : (
                               <div className="mt-2 grid grid-cols-3 gap-1.5">
                                 <div>
                                   <div className="mb-1 text-center text-[8px] font-semibold uppercase tracking-wider text-zinc-500">Sets</div>
