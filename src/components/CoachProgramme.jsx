@@ -27,6 +27,7 @@ import {
   fmtKg,
   highCns,
   isPlaced,
+  confirmCapAboveChart,
   loadRangeFromChart,
   lookupPct,
   makeAccItem,
@@ -656,7 +657,10 @@ export function CoachProgramme({
                         </div>
                         {item.setGroups.map((g) => {
                           const range = item.kind === 'main'
-                            ? loadRangeFromChart(client.pbs[item.lift], g.reps, g.rpe, g.modifier)
+                            ? loadRangeFromChart(client.pbs[item.lift], g.reps, g.rpe, g.modifier, {
+                              floor: g.floor,
+                              cap: g.cap,
+                            })
                             : null
                           return (
                             <div key={g.id} className="group/set relative mb-2 rounded-lg border border-white/8 p-2.5 hover:border-white/15">
@@ -700,18 +704,40 @@ export function CoachProgramme({
                                 </div>
                                 <label className="w-20">
                                   <Label>Floor</Label>
-                                  <input type="number" step="2.5" placeholder="—" value={g.floor} onChange={(e) => updateGroup(item.id, g.id, { floor: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
+                                  <input
+                                    type="number"
+                                    step="2.5"
+                                    placeholder="—"
+                                    value={g.floor}
+                                    onChange={(e) => updateGroup(item.id, g.id, { floor: e.target.value })}
+                                    className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm"
+                                  />
                                 </label>
                                 <label className="w-20">
                                   <Label>Cap</Label>
-                                  <input type="number" step="2.5" placeholder="—" value={g.cap} onChange={(e) => updateGroup(item.id, g.id, { cap: e.target.value })} className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm" />
+                                  <input
+                                    type="number"
+                                    step="2.5"
+                                    placeholder="—"
+                                    value={g.cap}
+                                    onChange={(e) => {
+                                      const value = e.target.value
+                                      if (item.kind === 'main' && range && value !== '') {
+                                        if (!confirmCapAboveChart(value, range.chartHigh)) return
+                                      }
+                                      updateGroup(item.id, g.id, { cap: value })
+                                    }}
+                                    className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm"
+                                  />
                                 </label>
                               </div>
                               {item.kind === 'main' && range && (
                                 <div className="mt-2 text-[11px] text-zinc-500">
-                                  Range {fmtKg(range.low)}–{fmtKg(range.high)} · Goal {fmtKg(range.goal)} kg
+                                  Range {fmtKg(range.low)}–{fmtKg(range.high)} · Goal {fmtKg(g.goalKg !== '' && g.goalKg != null ? Number(g.goalKg) : range.goal)} kg
                                   <span className="text-zinc-600">
-                                    {' '}(RPE {g.rpe}±1 · {(g.modifier * lookupPct(g.reps, g.rpe) * 100).toFixed(1)}% of {fmtKg(client.pbs[item.lift])} PB)
+                                    {' '}(chart {fmtKg(range.chartLow)}–{fmtKg(range.chartHigh)}
+                                    {(g.floor || g.cap) ? ', clamped by floor/cap' : ''}
+                                    {' · '}{(g.modifier * lookupPct(g.reps, g.rpe) * 100).toFixed(1)}% of {fmtKg(client.pbs[item.lift])} PB)
                                   </span>
                                 </div>
                               )}

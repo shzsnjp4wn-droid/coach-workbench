@@ -79,6 +79,16 @@ export function VideosPage({ athlete, role, onOpenDay, onReplyInChat }) {
                   <div className="text-xs text-zinc-500">
                     {video.weekIndex != null ? `${video.blockName} · Week ${video.weekIndex + 1} · ${WEEKDAYS[video.dayIndex]}` : video.blockName}
                   </div>
+                  {(() => {
+                    const linked = (athlete.logs || []).find((l) => l.id === video.logId || l.videoId === video.id)
+                    if (!linked?.note) return null
+                    return (
+                      <div className="mt-2 rounded-lg border border-white/10 bg-black/30 px-2.5 py-2 text-xs text-zinc-300">
+                        <div className="text-[9px] uppercase tracking-widest text-zinc-500">Athlete note</div>
+                        <p className="mt-1 whitespace-pre-wrap">{linked.note}</p>
+                      </div>
+                    )
+                  })()}
                   <div className="mt-2 flex flex-wrap gap-3">
                     {video.weekIndex != null && (
                       <button type="button" onClick={() => onOpenDay(video)} className="text-xs text-cyan-300">Open this day</button>

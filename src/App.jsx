@@ -1158,6 +1158,7 @@ export default function App() {
             stint={rawAthlete?.activeStint}
             roster={role === 'coach' ? connected : null}
             onBodyweight={(kg) => patchAthlete((c) => ({ ...c, bodyweightKg: Number(kg) }))}
+            onReplyInChat={role === 'coach' ? replyInChat : null}
           />
         )}
         {page === 'messages' && (
