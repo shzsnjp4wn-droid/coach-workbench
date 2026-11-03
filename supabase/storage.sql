@@ -2,9 +2,11 @@
 -- upload to Storage instead of staying as local blob URLs.
 -- App still works without this; uploads simply stay local until a bucket exists.
 
-insert into storage.buckets (id, name, public)
-values ('media', 'media', true)
-on conflict (id) do update set public = excluded.public;
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('media', 'media', true, 1073741824)
+on conflict (id) do update
+  set public = excluded.public,
+      file_size_limit = excluded.file_size_limit;
 
 drop policy if exists "media_public_read" on storage.objects;
 create policy "media_public_read"

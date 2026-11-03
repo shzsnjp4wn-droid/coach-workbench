@@ -656,6 +656,7 @@ export default function App() {
           setAthletes(nextAthletes)
         }
         setSaveState('saving')
+        setToast('Compressing clip…')
         // Keep a hard reference to the File so state updates can't drop it mid-save.
         uploadedUrl = await uploadMedia(current.id, videoId, {
           file: media.file || null,

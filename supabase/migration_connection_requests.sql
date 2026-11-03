@@ -2,7 +2,7 @@
 -- Run after migration_accounts.sql
 
 update storage.buckets
-set file_size_limit = 209715200
+set file_size_limit = 1073741824
 where id = 'media';
 
 create table if not exists public.connection_requests (

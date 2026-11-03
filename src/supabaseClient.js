@@ -721,21 +721,24 @@ async function uploadViaResumable(path, blob, contentType) {
 }
 
 export async function uploadMedia(athleteId, objectId, media) {
-  let blob = media?.file instanceof Blob ? media.file : null
-  if (!blob && media?.url) {
-    try {
-      blob = await fetch(media.url).then((r) => r.blob())
-    } catch (err) {
-      throw new Error(`upload media: could not read file (${err?.message || err})`)
-    }
-  }
+  // Shrink phone clips before Storage (720p / ~1 Mbps); images → JPEG.
+  const { compressMediaForUpload } = await import('./mediaCompress')
+  const prepared = await compressMediaForUpload(media)
+  let blob = prepared.file
   if (!blob) throw new Error('upload media: missing local file — re-attach the clip and try again')
 
-  const contentType = media.type || blob.type || 'application/octet-stream'
-  const ext = (media.name && media.name.includes('.'))
-    ? media.name.split('.').pop()
+  const contentType = prepared.type || blob.type || 'application/octet-stream'
+  const name = prepared.name || media?.name || 'clip'
+  const ext = name.includes('.')
+    ? name.split('.').pop()
     : (contentType.split('/')[1] || 'bin')
   const path = `${athleteId}/${objectId}.${ext}`
+
+  if (prepared.compressed) {
+    console.info(
+      `[supabase] compressed media ${prepared.originalSize} → ${blob.size} bytes (${ext})`,
+    )
+  }
 
   try {
     if (blob.size >= RESUMABLE_THRESHOLD) {
@@ -751,9 +754,14 @@ export async function uploadMedia(athleteId, objectId, media) {
       if (upError) throw upError
     }
   } catch (err) {
+    const detail = formatSupabaseError(err, 'upload media')
+    if (/413|maximum size|too large|payload/i.test(detail)) {
+      throw new Error(
+        `${detail} — clip is still over the Storage limit after compression. Trim the video or use a shorter take.`,
+      )
+    }
     throw new Error(
-      formatSupabaseError(err, 'upload media')
-      + ' — check supabase/storage.sql and that the media bucket allows anon uploads.',
+      `${detail} — check supabase/storage.sql and that the media bucket allows anon uploads.`,
     )
   }
 
