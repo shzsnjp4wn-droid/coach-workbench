@@ -342,12 +342,14 @@ export function defaultLiftLibrary() {
 export function defaultExercise(library, lift) {
   return library[lift]?.[0] || { name: `Comp ${LIFT_LABEL[lift]}`, modifier: 1 }
 }
-export function makeSetGroup(exercise, label = 'Top set', count = 1, reps = 5, rpe = 8) {
+export function makeSetGroup(exercise, label = 'Top set', count = 1, reps = 5, rpe = 8, repsMax = '') {
   return {
     id: uid(),
     label,
     count,
     reps,
+    /** When set and > reps, prescribe a double-progression range (e.g. 6–10). */
+    repsMax: repsMax === '' || repsMax == null ? '' : Number(repsMax),
     rpe,
     floor: '',
     cap: '',
@@ -355,6 +357,59 @@ export function makeSetGroup(exercise, label = 'Top set', count = 1, reps = 5, r
     exercise: exercise?.name || 'Comp Squat',
     modifier: exercise?.modifier ?? 1,
   }
+}
+
+/** Low end of prescribed reps (exact or range). */
+export function repsLow(group) {
+  return Math.max(1, Number(group?.reps) || 1)
+}
+
+/** High end when a range is set; otherwise null. */
+export function repsHigh(group) {
+  const low = repsLow(group)
+  const high = group?.repsMax === '' || group?.repsMax == null ? null : Number(group.repsMax)
+  if (!Number.isFinite(high) || high <= low) return null
+  return high
+}
+
+export function hasRepRange(group) {
+  return repsHigh(group) != null
+}
+
+/** Reps used for % chart / load calc — low end of the band. */
+export function chartReps(group) {
+  return repsLow(group)
+}
+
+/** "5" or "6–10" */
+export function formatReps(group) {
+  const low = repsLow(group)
+  const high = repsHigh(group)
+  return high != null ? `${low}–${high}` : String(low)
+}
+
+/**
+ * Compact coach/athlete preview: "3×6–10 @9" or "1×5 @8".
+ * Omits empty labels; used on collapsed day-editor bubbles.
+ */
+export function formatPrescription(group) {
+  const sets = Math.max(1, Number(group?.count) || 1)
+  const rpe = group?.rpe ?? '—'
+  return `${sets}×${formatReps(group)} @${rpe}`
+}
+
+/** Item title for day editor: "1° Squat" / accessory name. */
+export function itemTitle(item) {
+  if (!item) return ''
+  if (item.kind === 'main') return `${RANK_LABEL[item.rank]} ${LIFT_LABEL[item.lift]}`
+  return item.name || 'Accessory'
+}
+
+/** Collapsed summary across all set groups on an item. */
+export function formatItemSummary(item) {
+  const groups = item?.setGroups || []
+  if (groups.length === 0) return ''
+  return groups.map((g) => formatPrescription(g)).join(' · ')
 }
 export function makeMainItem(lift, rank, library) {
   const ex = defaultExercise(library, lift)
@@ -601,25 +656,38 @@ export function expandDaySets(day, client) {
   dayItems(day).forEach((item, itemIndex) => {
     item.setGroups.forEach((group, groupIndex) => {
       const count = Math.max(1, Number(group.count) || 1)
+      const low = repsLow(group)
+      const high = repsHigh(group)
       for (let i = 0; i < count; i += 1) {
+        // One athlete log row per prescribed set — weight/reps logged independently.
+        const chartR = chartReps(group)
         const prescribedKg = item.kind === 'main'
-          ? loadFromChart(client.pbs[item.lift], group.reps, group.rpe, group.modifier)
+          ? loadFromChart(client.pbs[item.lift], chartR, group.rpe, group.modifier)
           : (group.cap !== '' && group.cap != null ? Number(group.cap) : null)
+        const label = (group.label || '').trim()
+        const n = setNumber++
+        let setHeading
+        if (label && count > 1) setHeading = `Set ${i + 1} · ${label}`
+        else if (label) setHeading = label
+        else setHeading = `Set ${count > 1 ? i + 1 : n}`
         rows.push({
           setKey: `${itemIndex}:${groupIndex}:${i}`,
-          setNumber: setNumber++,
+          setNumber: n,
           item,
           group,
           exercise: item.kind === 'main' ? `${RANK_LABEL[item.rank]} ${group.exercise}` : item.name,
-          label: group.label,
+          label,
           lift: item.kind === 'main' ? item.lift : null,
-          prescribedReps: group.reps,
+          prescribedReps: low,
+          prescribedRepsMax: high,
+          prescribedRepsLabel: formatReps(group),
           prescribedRpe: group.rpe,
           prescribedKg,
           floor: group.floor,
           cap: group.cap,
           count,
           indexInGroup: i,
+          setHeading,
         })
       }
     })

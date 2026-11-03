@@ -1,4 +1,14 @@
-import { fmtKg, loadRangeFromChart, RANK_LABEL, WEEKDAYS, dayItems, dayTitle } from '../domain'
+import {
+  chartReps,
+  fmtKg,
+  formatReps,
+  hasRepRange,
+  loadRangeFromChart,
+  RANK_LABEL,
+  WEEKDAYS,
+  dayItems,
+  dayTitle,
+} from '../domain'
 import { Stepper } from './ui'
 
 export function MesoSheet({
@@ -67,8 +77,9 @@ export function MesoSheet({
                         <span>Goal</span>
                       </div>
                       {items.flatMap((item) => item.setGroups.map((g) => {
+                        const chartR = chartReps(g)
                         const range = item.kind === 'main'
-                          ? loadRangeFromChart(client.pbs[item.lift], g.reps, g.rpe, g.modifier, {
+                          ? loadRangeFromChart(client.pbs[item.lift], chartR, g.rpe, g.modifier, {
                             floor: g.floor,
                             cap: g.cap,
                           })
@@ -83,6 +94,7 @@ export function MesoSheet({
                             : item.lift === 'bench'
                               ? 'border-indigo-400/25 bg-indigo-600/15'
                               : 'border-fuchsia-400/25 bg-fuchsia-700/15'
+                        const rangeMode = hasRepRange(g)
                         return (
                           <div key={g.id} className={`rounded-lg border px-2 py-2 ${tone}`}>
                             <div className="grid grid-cols-[minmax(0,1.1fr)_0.75fr_0.6fr] items-start gap-1">
@@ -90,7 +102,9 @@ export function MesoSheet({
                                 <div className="truncate text-[12px] font-medium text-zinc-100">
                                   {item.kind === 'main' ? `${RANK_LABEL[item.rank]} ${g.exercise}` : item.name}
                                 </div>
-                                <div className="truncate text-[10px] text-zinc-500">{g.label}</div>
+                                <div className="truncate text-[10px] text-zinc-500">
+                                  {g.label || '—'} · {g.count}×{formatReps(g)}
+                                </div>
                               </div>
                               <div className="font-mono text-[11px] text-zinc-300">
                                 {range ? `${fmtKg(range.low)}–${fmtKg(range.high)}` : '—'}
@@ -115,7 +129,7 @@ export function MesoSheet({
                             {readOnly ? (
                               <div className="mt-2 flex gap-3 font-mono text-xs text-zinc-300">
                                 <span>{g.count}×</span>
-                                <span>{g.reps}r</span>
+                                <span>{formatReps(g)}r</span>
                                 <span>@{g.rpe}</span>
                               </div>
                             ) : (
@@ -131,14 +145,42 @@ export function MesoSheet({
                                   />
                                 </div>
                                 <div>
-                                  <div className="mb-1 text-center text-[8px] font-semibold uppercase tracking-wider text-zinc-500">Reps</div>
-                                  <Stepper
-                                    value={g.reps}
-                                    min={1}
-                                    max={30}
-                                    size="lg"
-                                    onChange={(reps) => onEditGroup(wi, di, item.id, g.id, { reps })}
-                                  />
+                                  <div className="mb-1 text-center text-[8px] font-semibold uppercase tracking-wider text-zinc-500">
+                                    Reps{rangeMode ? ` ${formatReps(g)}` : ''}
+                                  </div>
+                                  {rangeMode ? (
+                                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-0.5">
+                                      <Stepper
+                                        value={g.reps}
+                                        min={1}
+                                        max={29}
+                                        size="lg"
+                                        onChange={(reps) => {
+                                          const high = Number(g.repsMax)
+                                          onEditGroup(wi, di, item.id, g.id, {
+                                            reps,
+                                            repsMax: Number.isFinite(high) && high <= reps ? reps + 1 : g.repsMax,
+                                          })
+                                        }}
+                                      />
+                                      <span className="text-[10px] text-zinc-500">–</span>
+                                      <Stepper
+                                        value={g.repsMax}
+                                        min={(Number(g.reps) || 1) + 1}
+                                        max={30}
+                                        size="lg"
+                                        onChange={(repsMax) => onEditGroup(wi, di, item.id, g.id, { repsMax })}
+                                      />
+                                    </div>
+                                  ) : (
+                                    <Stepper
+                                      value={g.reps}
+                                      min={1}
+                                      max={30}
+                                      size="lg"
+                                      onChange={(reps) => onEditGroup(wi, di, item.id, g.id, { reps })}
+                                    />
+                                  )}
                                 </div>
                                 <div>
                                   <div className="mb-1 text-center text-[8px] font-semibold uppercase tracking-wider text-zinc-500">RPE</div>
