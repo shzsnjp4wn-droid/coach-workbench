@@ -73,7 +73,7 @@ export function ProgressPage({ athlete, viewer, stint, roster, onBodyweight, onR
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">{viewer === 'coach' ? athlete.name : 'Your lifting'}</div>
-          <h1 className="font-display text-4xl text-white">e1RM & GL</h1>
+          <h1 className="font-display text-3xl text-white sm:text-4xl">e1RM & GL</h1>
           <p className="text-sm text-zinc-500">Estimated from logged sets. GL uses the IPF classic formula (shown as DOTS in-product).</p>
         </div>
         <label className="text-sm">

@@ -13,7 +13,7 @@ export function RoleGate({ onChoose }) {
         </div>
         <div className="my-auto grid gap-6 py-10">
           <div>
-            <h1 className="font-display text-6xl leading-none text-white">Who’s opening the floor?</h1>
+            <h1 className="font-display text-4xl leading-none text-white sm:text-6xl">Who’s opening the floor?</h1>
             <p className="mt-3 max-w-xl text-sm text-zinc-400">Coaches write the block. Athletes train the day, log every set, and send the clip with the load on it.</p>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
