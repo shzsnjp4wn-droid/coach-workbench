@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, Dumbbell, LayoutGrid, MessageCircle, Settings, TrendingUp, Video, Zap } from 'lucide-react'
+import { ChevronDown, Dumbbell, LayoutGrid, LogOut, MessageCircle, MoreHorizontal, Settings, TrendingUp, UserRound, Users, Video, Zap } from 'lucide-react'
 import { AccountSettings } from './components/AccountSettings'
 import { AthleteProgramme } from './components/AthleteProgramme'
 import { AthleteToday } from './components/AthleteToday'
@@ -95,6 +95,7 @@ export default function App() {
   const [saveState, setSaveState] = useState('idle')
   const [connectionRequests, setConnectionRequests] = useState([])
   const [showAccountSettings, setShowAccountSettings] = useState(false)
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false)
   const persistTimers = useRef({})
   const persistFns = useRef({})
   const athletesRef = useRef(athletes)
@@ -1023,67 +1024,97 @@ export default function App() {
 
   const accent = role === 'coach' ? 'bg-cyan-400 text-black' : 'bg-lime-400 text-black'
 
+  function changeRole() {
+    localStorage.removeItem(SESSION_KEY)
+    setHeaderMenuOpen(false)
+    setScreen('role')
+    setRole(null)
+    setAthleteId(null)
+  }
+
   return (
     <div className="min-h-svh bg-[#07080b] font-sans text-zinc-200">
-      <header className="border-b border-white/8 bg-[#0b0d12]">
-        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-3 px-4 py-3">
-          <button type="button" onClick={() => setScreen('connect')} className="flex items-center gap-3 text-left">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-cyan-400 text-black"><Zap size={18} /></div>
-            <div>
-              <div className="font-display text-xl tracking-[0.14em] text-white">IRON//WORKBENCH</div>
-              <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">{role === 'coach' ? `Coach · ${coach.name}` : `Athlete · ${athlete.name}`}</div>
+      <header className="sticky top-0 z-30 border-b border-white/8 bg-[#0b0d12]/90 backdrop-blur">
+        <div className="mx-auto flex max-w-[1600px] items-center gap-2 px-3 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
+          <button type="button" onClick={() => setScreen('connect')} className="flex min-w-0 flex-1 items-center gap-2.5 text-left sm:flex-none sm:gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-400 text-black"><Zap size={18} /></div>
+            <div className="min-w-0">
+              <div className="font-display text-lg tracking-[0.14em] text-white sm:text-xl">IRON//WORKBENCH</div>
+              <div className="truncate text-[10px] uppercase tracking-[0.2em] text-zinc-500">{role === 'coach' ? `Coach · ${coach.name}` : `Athlete · ${athlete.name}`}</div>
             </div>
           </button>
-          {role === 'coach' ? (
-            <div className="relative min-w-[200px]">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Athlete</div>
-              <div className="relative">
-                <select value={athleteId} onChange={(e) => { setAthleteId(e.target.value); setSelectedBlockId(null); setSelectedWeek(0); setSelectedDay(0); setStage('macro') }} className="w-full appearance-none rounded-lg border border-white/10 bg-[#151821] py-2 pl-3 pr-8 text-sm">
-                  {connected.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
-                </select>
-                <ChevronDown size={14} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500" />
-              </div>
-            </div>
-          ) : (
-            <div className="text-sm text-zinc-400">Coach {coach.name}</div>
-          )}
-          <div className="rounded-md border border-white/10 bg-black/30 px-2.5 py-1.5 text-right">
+
+          <div className="hidden rounded-md border border-white/10 bg-black/30 px-2.5 py-1.5 text-right md:block">
             <div className="text-[9px] uppercase tracking-widest text-zinc-500">Today</div>
             <div className="font-mono text-xs text-zinc-200">{formatMeetDate(todayISO())}</div>
           </div>
-          <div className="ml-auto flex items-center gap-2">
-            <button type="button" onClick={() => setScreen('connect')} className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">
-              {role === 'coach' ? 'Roster' : 'Connect'}
-            </button>
+
+          <div className="relative ml-auto flex items-center gap-1.5 sm:gap-2">
+            <div className="hidden items-center gap-2 md:flex">
+              <button type="button" onClick={() => setScreen('connect')} className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">
+                {role === 'coach' ? 'Roster' : 'Connect'}
+              </button>
+              <button type="button" onClick={() => setScreen('profile')} className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">
+                Profiles
+              </button>
+              <button type="button" onClick={() => setShowAccountSettings(true)} className="inline-flex items-center gap-1.5 rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">
+                <Settings size={12} /> Account
+              </button>
+              <button type="button" onClick={changeRole} className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400">
+                Change role
+              </button>
+            </div>
+
             <button
               type="button"
-              onClick={() => { setScreen('profile') }}
-              className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400"
+              aria-label="More"
+              aria-expanded={headerMenuOpen}
+              onClick={() => setHeaderMenuOpen((o) => !o)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-white/10 text-zinc-300 md:hidden"
             >
-              Profiles
+              <MoreHorizontal size={18} />
             </button>
-            <button
-              type="button"
-              onClick={() => setShowAccountSettings(true)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400"
-            >
-              <Settings size={12} /> Account
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                localStorage.removeItem(SESSION_KEY)
-                setScreen('role')
-                setRole(null)
-                setAthleteId(null)
-              }}
-              className="rounded-md border border-white/10 px-3 py-1.5 text-xs uppercase tracking-wider text-zinc-400"
-            >
-              Change role
-            </button>
+
+            {headerMenuOpen && (
+              <>
+                <button type="button" className="fixed inset-0 z-40 md:hidden" aria-label="Close menu" onClick={() => setHeaderMenuOpen(false)} />
+                <div className="absolute right-0 top-11 z-50 w-52 overflow-hidden rounded-xl border border-white/10 bg-[#12151d] shadow-xl md:hidden">
+                  <button type="button" onClick={() => { setHeaderMenuOpen(false); setScreen('connect') }} className="flex w-full items-center gap-2 px-3 py-3 text-left text-sm text-zinc-200 hover:bg-white/5">
+                    <Users size={14} /> {role === 'coach' ? 'Roster' : 'Connect'}
+                  </button>
+                  <button type="button" onClick={() => { setHeaderMenuOpen(false); setScreen('profile') }} className="flex w-full items-center gap-2 px-3 py-3 text-left text-sm text-zinc-200 hover:bg-white/5">
+                    <UserRound size={14} /> Profiles
+                  </button>
+                  <button type="button" onClick={() => { setHeaderMenuOpen(false); setShowAccountSettings(true) }} className="flex w-full items-center gap-2 px-3 py-3 text-left text-sm text-zinc-200 hover:bg-white/5">
+                    <Settings size={14} /> Account
+                  </button>
+                  <button type="button" onClick={changeRole} className="flex w-full items-center gap-2 border-t border-white/8 px-3 py-3 text-left text-sm text-zinc-200 hover:bg-white/5">
+                    <LogOut size={14} /> Change role
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
-        <nav className="mx-auto flex max-w-[1600px] gap-1 overflow-x-auto px-4 pb-3">
+
+        {role === 'coach' && (
+          <div className="mx-auto max-w-[1600px] px-3 pb-2.5 sm:px-4">
+            <div className="relative">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-zinc-500">Athlete</div>
+              <select
+                value={athleteId}
+                onChange={(e) => { setAthleteId(e.target.value); setSelectedBlockId(null); setSelectedWeek(0); setSelectedDay(0); setStage('macro') }}
+                className="w-full appearance-none rounded-lg border border-white/10 bg-[#151821] py-2.5 pl-3 pr-9 text-sm md:max-w-xs"
+              >
+                {connected.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
+              </select>
+              <ChevronDown size={14} className="pointer-events-none absolute right-3 top-[1.85rem] text-zinc-500" />
+            </div>
+          </div>
+        )}
+
+        {/* Desktop / tablet top nav */}
+        <nav className="mx-auto hidden max-w-[1600px] gap-1 overflow-x-auto px-4 pb-3 md:flex">
           {nav.map(([id, label, Icon]) => (
             <button key={id} type="button" onClick={() => setPage(id)} className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs uppercase tracking-wider ${page === id ? accent : 'text-zinc-400'}`}>
               <Icon size={14} />
@@ -1095,7 +1126,7 @@ export default function App() {
         </nav>
       </header>
 
-      <main className="mx-auto grid w-full max-w-[1600px] grid-cols-1 gap-4 px-4 py-4">
+      <main className="mx-auto grid w-full max-w-[1600px] grid-cols-1 gap-3 px-3 py-3 pb-[calc(5.25rem+env(safe-area-inset-bottom))] sm:gap-4 sm:px-4 sm:py-4 md:pb-4">
         {role === 'coach' && page === 'programme' && (
           <CoachProgramme
             client={athlete}
@@ -1183,6 +1214,30 @@ export default function App() {
           />
         )}
       </main>
+
+      {/* Phone bottom nav — thumb-friendly primary pages */}
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-white/10 bg-[#0b0d12]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden">
+        <div
+          className="mx-auto grid max-w-[1600px] gap-0.5 px-1 pt-1"
+          style={{ gridTemplateColumns: `repeat(${nav.length}, minmax(0, 1fr))` }}
+        >
+          {nav.map(([id, label, Icon]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setPage(id)}
+              className={`relative flex min-h-14 flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1.5 text-[10px] uppercase tracking-wider ${page === id ? accent : 'text-zinc-500'}`}
+            >
+              <Icon size={18} />
+              <span className="truncate">{label}</span>
+              {id === 'messages' && messageBadge > 0 && (
+                <span className={`absolute right-2 top-1 rounded-full px-1 text-[9px] font-semibold ${role === 'coach' ? 'bg-cyan-400 text-black' : 'bg-lime-400 text-black'}`}>{messageBadge}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </nav>
+
       {showAccountSettings && (
         <AccountSettings
           role={role}
@@ -1203,7 +1258,7 @@ export default function App() {
 
 function Toast({ text, tone }) {
   return (
-    <div className={`fixed bottom-4 left-4 z-40 max-w-md rounded-lg border px-3 py-2 font-mono text-xs ${tone === 'athlete' ? 'border-lime-400/30 bg-[#10140d] text-lime-200' : 'border-cyan-400/30 bg-[#0c1214] text-cyan-100'}`}>
+    <div className={`fixed bottom-[calc(4.75rem+env(safe-area-inset-bottom))] left-3 right-3 z-40 max-w-md rounded-lg border px-3 py-2 font-mono text-xs md:bottom-4 md:left-4 md:right-auto ${tone === 'athlete' ? 'border-lime-400/30 bg-[#10140d] text-lime-200' : 'border-cyan-400/30 bg-[#0c1214] text-cyan-100'}`}>
       {text}
     </div>
   )

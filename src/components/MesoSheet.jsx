@@ -36,7 +36,7 @@ export function MesoSheet({
         {weeks.map(({ wk, wi }) => (
           <div
             key={wi}
-            className={`shrink-0 border-r border-white/10 ${focusWeekOnly ? 'w-full min-w-0' : 'w-[320px]'}`}
+            className={`shrink-0 border-r border-white/10 ${focusWeekOnly ? 'w-full min-w-0' : 'w-[min(320px,85vw)]'}`}
           >
             <div className="sticky top-0 z-10 border-b border-white/10 bg-[#12151d] px-3 py-2.5">
               <div className="font-display text-xl tracking-wide text-white">Week {wi + 1}</div>

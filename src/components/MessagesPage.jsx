@@ -35,11 +35,11 @@ export function MessagesPage({ role, athlete, athletes, coach = COACH, messages,
   }
 
   return (
-    <div className={`grid h-[calc(100svh-9.5rem)] min-h-[520px] overflow-hidden rounded-xl border border-white/8 bg-[#0e1016] ${role === 'coach' ? 'lg:grid-cols-[280px_1fr]' : ''}`}>
+    <div className={`grid h-[calc(100svh-11.5rem)] min-h-[360px] overflow-hidden rounded-xl border border-white/8 bg-[#0e1016] md:h-[calc(100svh-9.5rem)] md:min-h-[480px] ${role === 'coach' ? 'lg:grid-cols-[280px_1fr]' : ''}`}>
       {role === 'coach' && (
         <aside className="border-b border-white/8 lg:border-b-0 lg:border-r">
           <div className="border-b border-white/8 px-4 py-3 text-[10px] uppercase tracking-[0.16em] text-zinc-500">Athletes</div>
-          <div className="pane-scroll max-h-48 overflow-auto lg:max-h-none lg:h-[calc(100%-2.5rem)]">
+          <div className="pane-scroll max-h-36 overflow-auto lg:max-h-none lg:h-[calc(100%-2.5rem)]">
             {connected.map((person) => {
               const last = (messages[person.id] || []).at(-1)
               const unread = (messages[person.id] || []).filter((m) => m.unread && m.from === 'athlete').length

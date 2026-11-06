@@ -511,9 +511,22 @@ export function CoachProgramme({
 
       {selectedBlock && plan && (
         <>
-          <div className="flex flex-wrap gap-2">
-            {[['micro', '2 Micro'], ['day', '3 Day'], ['meso', '4 Mesocycle sheet'], ['library', 'Variations']].map(([id, label]) => (
-              <button key={id} type="button" onClick={() => setStage(id)} className={`rounded-lg border px-3 py-1.5 text-xs uppercase tracking-wider ${stage === id ? 'border-cyan-400 bg-cyan-400/15 text-cyan-200' : 'border-white/10 text-zinc-400'}`}>{label}</button>
+          <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+            {[
+              ['micro', 'Micro', '2 Micro'],
+              ['day', 'Day', '3 Day'],
+              ['meso', 'Meso', '4 Mesocycle'],
+              ['library', 'Library', 'Variations'],
+            ].map(([id, shortLabel, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setStage(id)}
+                className={`shrink-0 rounded-lg border px-3 py-2 text-xs uppercase tracking-wider ${stage === id ? 'border-cyan-400 bg-cyan-400/15 text-cyan-200' : 'border-white/10 text-zinc-400'}`}
+              >
+                <span className="sm:hidden">{shortLabel}</span>
+                <span className="hidden sm:inline">{label}</span>
+              </button>
             ))}
           </div>
 
@@ -595,7 +608,7 @@ export function CoachProgramme({
                                   else if (!d.active) toggleDay(wi, di)
                                   else { setSelectedDay(di); setStage('day') }
                                 }}
-                                className={`w-[108px] rounded-lg border p-1.5 transition ${d.active ? 'border-white/15 bg-[#10131a]' : 'border-dashed border-white/10 bg-transparent text-zinc-600'} ${highCns(d) ? 'border-orange-500/60' : ''} ${activeWeek && di === selectedDay ? 'ring-2 ring-cyan-400/70' : 'hover:border-cyan-400/40'}`}
+                                className={`w-[92px] rounded-lg border p-1.5 transition sm:w-[108px] ${d.active ? 'border-white/15 bg-[#10131a]' : 'border-dashed border-white/10 bg-transparent text-zinc-600'} ${highCns(d) ? 'border-orange-500/60' : ''} ${activeWeek && di === selectedDay ? 'ring-2 ring-cyan-400/70' : 'hover:border-cyan-400/40'}`}
                               >
                                 <div className="flex items-center justify-between">
                                   <span className="text-[10px] uppercase tracking-wider">{WEEKDAYS[di].slice(0, 3)}</span>
@@ -726,12 +739,12 @@ export function CoachProgramme({
                                         <div className="hidden sm:block" />
                                       )}
                                     </div>
-                                    <div className="mt-2 flex flex-wrap items-end gap-3">
-                                      <div className="w-[7.5rem]">
+                                    <div className="mt-2 grid grid-cols-2 items-end gap-2 sm:flex sm:flex-wrap sm:gap-3">
+                                      <div className="min-w-0 sm:w-[7.5rem]">
                                         <Label>Sets</Label>
                                         <Stepper value={g.count} min={1} max={20} onChange={(count) => updateGroup(item.id, g.id, { count })} />
                                       </div>
-                                      <div className="min-w-0">
+                                      <div className="min-w-0 sm:w-auto">
                                         <div className="mb-1 flex items-center gap-2">
                                           <Label>Reps</Label>
                                           <button
@@ -751,7 +764,7 @@ export function CoachProgramme({
                                         </div>
                                         {rangeMode ? (
                                           <div className="flex items-center gap-1.5">
-                                            <div className="w-[6.5rem]">
+                                            <div className="min-w-0 flex-1 sm:w-[6.5rem] sm:flex-none">
                                               <Stepper
                                                 value={g.reps}
                                                 min={1}
@@ -766,7 +779,7 @@ export function CoachProgramme({
                                               />
                                             </div>
                                             <span className="text-zinc-500">–</span>
-                                            <div className="w-[6.5rem]">
+                                            <div className="min-w-0 flex-1 sm:w-[6.5rem] sm:flex-none">
                                               <Stepper
                                                 value={g.repsMax}
                                                 min={(Number(g.reps) || 1) + 1}
@@ -776,16 +789,16 @@ export function CoachProgramme({
                                             </div>
                                           </div>
                                         ) : (
-                                          <div className="w-[7.5rem]">
+                                          <div className="min-w-0 sm:w-[7.5rem]">
                                             <Stepper value={g.reps} min={1} max={30} onChange={(reps) => updateGroup(item.id, g.id, { reps })} />
                                           </div>
                                         )}
                                       </div>
-                                      <div className="w-[7.5rem]">
+                                      <div className="min-w-0 sm:w-[7.5rem]">
                                         <Label>RPE</Label>
                                         <Stepper value={g.rpe} step={0.5} min={5} max={10} onChange={(rpe) => updateGroup(item.id, g.id, { rpe })} />
                                       </div>
-                                      <label className="w-20">
+                                      <label className="min-w-0 sm:w-20">
                                         <Label>Floor</Label>
                                         <input
                                           type="number"
@@ -796,7 +809,7 @@ export function CoachProgramme({
                                           className="w-full rounded-md border border-white/10 bg-[#151821] px-2 py-1.5 text-sm"
                                         />
                                       </label>
-                                      <label className="w-20">
+                                      <label className="min-w-0 sm:w-20">
                                         <Label>Cap</Label>
                                         <input
                                           type="number"

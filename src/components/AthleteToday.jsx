@@ -159,7 +159,7 @@ export function AthleteToday({
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <div>
             <div className="flex items-center gap-2 text-lime-300"><Dumbbell size={16} /> {viewingToday ? 'Today' : 'Session'}</div>
-            <h1 className="font-display text-4xl text-white">{day ? dayTitle(day) : 'No session'}</h1>
+            <h1 className="font-display text-3xl text-white sm:text-4xl">{day ? dayTitle(day) : 'No session'}</h1>
             <p className="text-sm text-zinc-500">
               {selectedBlock ? `${selectedBlock.name} · Week ${selectedWeek + 1}` : 'No block published'}
               {selectedDate ? ` · ${formatMeetDate(selectedDate)}` : ''}
@@ -184,8 +184,7 @@ export function AthleteToday({
         </div>
 
         {plan && (
-          <div className="overflow-x-auto">
-          <div className="grid min-w-[640px] grid-cols-7 gap-1">
+          <div className="grid grid-cols-7 gap-1">
             {plan.weeks[selectedWeek].days.map((d, di) => {
               const logged = client.logs.some((l) => l.blockId === selectedBlockId && l.weekIndex === selectedWeek && l.dayIndex === di)
               const isToday = todayHit && todayHit.weekIndex === selectedWeek && todayHit.dayIndex === di
@@ -194,18 +193,17 @@ export function AthleteToday({
                   key={d.id}
                   type="button"
                   onClick={() => onSelectDay(di)}
-                  className={`rounded-lg border px-1 py-2 text-left ${di === selectedDay ? 'border-lime-400/70 bg-lime-400/10' : 'border-white/10 bg-black/20'} ${d.active ? '' : 'opacity-50'}`}
+                  className={`min-w-0 rounded-lg border px-0.5 py-2 text-left sm:px-1 ${di === selectedDay ? 'border-lime-400/70 bg-lime-400/10' : 'border-white/10 bg-black/20'} ${d.active ? '' : 'opacity-50'}`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] uppercase tracking-wider text-zinc-400">{WEEKDAYS[di].slice(0, 3)}</span>
-                    {logged && <span className="h-1.5 w-1.5 rounded-full bg-lime-400" />}
+                  <div className="flex items-center justify-between gap-0.5">
+                    <span className="text-[9px] uppercase tracking-wider text-zinc-400 sm:text-[10px]">{WEEKDAYS[di].slice(0, 3)}</span>
+                    {logged && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-lime-400" />}
                   </div>
-                  <div className="mt-1 truncate text-[11px] text-zinc-200">{dayTitle(d)}</div>
-                  {isToday && <div className="mt-1 text-[9px] uppercase tracking-widest text-lime-300">Today</div>}
+                  <div className="mt-1 truncate text-[9px] leading-tight text-zinc-200 sm:text-[11px]">{dayTitle(d)}</div>
+                  {isToday && <div className="mt-1 text-[8px] uppercase tracking-widest text-lime-300 sm:text-[9px]">Today</div>}
                 </button>
               )
             })}
-          </div>
           </div>
         )}
       </Card>
@@ -376,7 +374,7 @@ export function AthleteToday({
                     type="button"
                     disabled={busyKey === row.setKey}
                     onClick={() => attempt(row)}
-                    className="rounded-lg bg-lime-400 px-4 py-2 text-sm font-semibold text-black disabled:opacity-60"
+                    className="min-h-11 flex-1 rounded-lg bg-lime-400 px-4 py-2.5 text-sm font-semibold text-black disabled:opacity-60 sm:flex-none"
                   >
                     {busyKey === row.setKey ? 'Saving…' : existing ? 'Update set' : 'Log set'}
                   </button>

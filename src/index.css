@@ -12,10 +12,20 @@ body,
   min-height: 100%;
 }
 
+html {
+  /* Stop the whole page from rubber-banding sideways on phones. */
+  overflow-x: clip;
+}
+
 body {
   margin: 0;
   background: #07080b;
   color: #e8eaef;
+  overflow-x: clip;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 #root {
@@ -28,8 +38,18 @@ body {
 
 input,
 select,
-button {
+button,
+textarea {
   font: inherit;
+}
+
+/* iOS zooms inputs under 16px — keep form controls readable without zoom. */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
 }
 
 .timeline-scroll::-webkit-scrollbar,
